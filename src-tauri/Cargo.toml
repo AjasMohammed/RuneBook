@@ -1,0 +1,30 @@
+[package]
+name = "runebook"
+version = "0.1.0"
+description = "A system-wide runbook scratchpad"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "runebook_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Phase 2: SQLite via rusqlite (not tauri-plugin-sql) so all SQL stays in the
+# Rust core behind IPC commands — see docs/05-decisions.md (D7). `bundled`
+# compiles SQLite from source, so no system libsqlite is required.
+rusqlite = { version = "0.31", features = ["bundled", "backup"] }
+# Clipboard used in Rust (ClipboardExt) to back the per-code-block copy buttons,
+# so clipboard access stays in the core behind an IPC command.
+tauri-plugin-clipboard-manager = "2"
+# Phase 5: autostart on login (Rust API) and a native save dialog for Markdown
+# export (the file write itself stays in a Rust command).
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"

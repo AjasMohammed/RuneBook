@@ -1,0 +1,15 @@
+node_modules
+dist
+.DS_Store
+*.log
+
+# Rust / Tauri build artifacts
+src-tauri/target
+src-tauri/gen
+mcp-server/target
+
+# Local SQLite data (app writes to ~/.local/share/com.runebook.app, but ignore any stray copies)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

@@ -1,0 +1,29 @@
+{
+  "name": "runebook",
+  "version": "0.1.0",
+  "description": "A system-wide runbook scratchpad",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-global-shortcut": "^2.0.0",
+    "@tiptap/core": "^2.27.2",
+    "@tiptap/extension-link": "^2.27.2",
+    "@tiptap/extension-placeholder": "^2.27.2",
+    "@tiptap/starter-kit": "^2.27.2",
+    "marked": "^12.0.2",
+    "tiptap-markdown": "^0.8.10"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^3.1.2",
+    "@tauri-apps/cli": "^2.0.0",
+    "svelte": "^4.2.19",
+    "vite": "^5.4.0"
+  }
+}
