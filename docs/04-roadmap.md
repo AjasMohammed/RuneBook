@@ -121,6 +121,29 @@ Note: every check here is `cargo test`/`cargo check` + `npm run build`; a live
 - Verified via `cargo test` (incl. `run_gate_defaults_off_and_tracks_setting`,
   `project_dir_pins_and_clears`) + `npm run build` + MCP `cargo check`.
 
+## Phase 9 — AI reports (in progress)
+**Goal:** let an MCP-connected AI write a **report** the user reads *inside* Runebook
+— a project intro, a "what changed" summary, an analysis — instead of dumping a
+standalone HTML file ([05-decisions.md](05-decisions.md) D17).
+- ✅ **Data:** migration **v8** adds a `kind` column to `runbook`; a report is a
+  `kind='report'` runbook whose single step body is the Markdown document.
+  `db::create_report` creates one. `list`/`get` return `kind`.
+- ✅ **MCP tool:** `create_report(title, body, tags?, description?)` (mutating;
+  hidden in read-only mode), with a verbose description that teaches the agent the
+  house format (callouts, tables, `<details>`, headings → TOC, fenced code blocks).
+- ✅ **Safe rich rendering:** the report body renders through the shared `marked`
+  pipeline — now **DOMPurify-sanitized** because the content is AI-authored — plus a
+  report-only pass for GitHub-style callouts and an auto table of contents. A
+  `kind='report'` runbook opens in a read-only reading view (badge, TOC, Copy/Save
+  `.md`); code blocks are **copy-only** (no ▶ run).
+- ⨯ **Deferred:** Mermaid diagrams (dynamic-import later, keeps the bundle light);
+  live push of a new report to an open overlay (separate processes — appears on next
+  list load for now); a sandboxed-iframe "raw AI HTML" escape hatch.
+- **Done when:** an agent calls `create_report`, and opening it in Browse shows a
+  clean, sanitized, on-brand document with a working TOC and copy buttons.
+- Verified via `cargo test` (db `create_report`/`kind`, MCP tool list) +
+  `npm run build` + MCP `cargo check`.
+
 ## Later / nice-to-have
 - ✅ Variables/placeholders in commands (`ssh deploy@{{host}}`) filled at copy time —
   per-runbook fill-in fields in Browse; live substitution in the rendered preview

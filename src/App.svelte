@@ -27,6 +27,14 @@
 
   let mode = "quick"; // "quick" | "browse" | "settings"
 
+  // Switch top-level mode and drop any transient banners that belonged to the
+  // mode we're leaving (a stale error / flash shouldn't follow the user across).
+  function setMode(m) {
+    error = "";
+    clearFlash();
+    mode = m;
+  }
+
   // Settings state.
   let hotkey = "Control+Alt+Space";
   let hotkeyInput = hotkey;
@@ -43,6 +51,7 @@
   let newRbName = "";
   let composer; // MarkdownEditor instance, focused on summon
   let flash = ""; // "saved" confirmation
+  let flashScope = "quick"; // which mode the flash belongs to — so a Browse "Copied ✓" can't paint in the Quick-add footer
   let addedThisSession = 0;
   let flashTimer;
   let unlistenShow;
@@ -112,8 +121,13 @@
   }
 
   // Replay progress for the card badges — only runbooks with a step checked off.
+  let progressSeq = 0;
   async function loadProgress() {
+    // Tag each request; if a newer one started before this resolved, drop the
+    // stale response so rapid step-toggling can't paint an out-of-order badge.
+    const seq = ++progressSeq;
     const list = (await run(() => invoke("list_progress"))) ?? [];
+    if (seq !== progressSeq) return;
     const map = {};
     for (const p of list) map[p.runbookId] = { done: p.done, total: p.total };
     progressMap = map;
@@ -226,7 +240,7 @@
   }
 
   async function goQuick() {
-    mode = "quick";
+    setMode("quick");
     await focusComposer();
   }
 
@@ -294,8 +308,14 @@
 
   function showFlash(msg) {
     flash = msg;
+    flashScope = mode; // tie this confirmation to the mode it fired in
     clearTimeout(flashTimer);
     flashTimer = setTimeout(() => (flash = ""), 1400);
+  }
+
+  function clearFlash() {
+    flash = "";
+    clearTimeout(flashTimer);
   }
 
   // ── Browse: runbook + step CRUD ──────────────────────────────────
@@ -497,9 +517,22 @@
   }
 
   // ── Settings ─────────────────────────────────────────────────────
+  // Convert a #rrggbb accent to an rgba() string at the given alpha, so the
+  // tinted backgrounds/borders can follow the runtime accent (a literal orange
+  // rgba would stay orange after the user switches accent to e.g. Teal).
+  function accentRgba(hex, alpha) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+    if (!m) return hex;
+    const n = parseInt(m[1], 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  }
+
   function applyAccent(value) {
     accent = value;
-    document.documentElement.style.setProperty("--accent", value);
+    const root = document.documentElement.style;
+    root.setProperty("--accent", value);
+    root.setProperty("--accent-soft", accentRgba(value, 0.14));
+    root.setProperty("--accent-line", accentRgba(value, 0.5));
   }
 
   async function chooseAccent(value) {
@@ -663,7 +696,10 @@
   }
 
   // ── Command palette (D14) ────────────────────────────────────────
+  let paletteReturnFocus = null; // element to restore focus to when the modal closes
   async function openPalette() {
+    paletteReturnFocus = document.activeElement;
+    pickerOpen = false; // only one transient layer at a time
     paletteQuery = "";
     paletteIndex = 0;
     paletteOpen = true;
@@ -673,11 +709,16 @@
 
   function closePalette() {
     paletteOpen = false;
+    // Restore focus to whatever had it before the modal opened (don't strand it
+    // on <body>). palettePick sets its own focus afterward, so skip there.
+    paletteReturnFocus?.focus?.();
+    paletteReturnFocus = null;
   }
 
   async function palettePick(r) {
-    closePalette();
-    mode = "browse";
+    paletteOpen = false;
+    paletteReturnFocus = null;
+    setMode("browse");
     await openRunbook(r.id);
   }
 
@@ -699,6 +740,11 @@
       e.preventDefault();
       e.stopPropagation();
       closePalette();
+    } else if (e.key === "Tab") {
+      // Trap focus: the modal's only real focus stop is its input (results are
+      // arrow-navigated), so keep Tab from moving focus to controls behind the
+      // scrim.
+      e.preventDefault();
     }
   }
 
@@ -719,13 +765,39 @@
     gitStatus = res ?? "Sync failed — see the error above.";
   }
 
+  // Inline SVG icons for the inline-code copy affordance. A literal glyph (⧉ /
+  // ✓) can render as a tofu box in WebKitGTK's system font; an SVG with
+  // currentColor is reliable and follows the accent on hover.
+  const COPY_ICON =
+    '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" focusable="false">' +
+    '<rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/>' +
+    '<path d="M10.5 5.5V3.5A1.5 1.5 0 0 0 9 2H3.5A1.5 1.5 0 0 0 2 3.5V9A1.5 1.5 0 0 0 3.5 10.5H5.5" fill="none" stroke="currentColor" stroke-width="1.3"/>' +
+    "</svg>";
+  const CHECK_ICON =
+    '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" focusable="false">' +
+    '<path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>' +
+    "</svg>";
+
   // Render markdown into the node (with {{vars}} filled) and wire a copy button
   // — and, when execution is enabled, a Run button — onto every code block.
   // Re-runs when the body, variable values, or the run gate change.
   function markdown(node, param) {
     let current = param;
+    let lastKey = null;
+
+    // A cheap signature of the *visible* output. Re-render only when this changes,
+    // so typing into a variable field that this step doesn't reference (or any var
+    // edit on a step with no {{placeholders}}) no longer re-parses the markdown and
+    // destroys the run-output panel on every keystroke.
+    function keyOf(p) {
+      return (
+        (p.body ?? "") + " " + (p.allowRun ? "1" : "0") + " " + fillVars(p.body ?? "", p.vars)
+      );
+    }
+
     function render() {
       const { body, vars } = current;
+      lastKey = keyOf(current);
       node.innerHTML = marked.parse(fillVars(body ?? "", vars));
       // Raw (unfilled) source of each code block, aligned by document order with
       // the rendered <pre>s — so the Run path can substitute shell-escaped values.
@@ -733,16 +805,11 @@
       node.querySelectorAll("pre").forEach((pre, i) => {
         const code = pre.querySelector("code") ?? pre;
         const text = code.textContent; // filled values — human-facing (copy/display)
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "copy";
-        btn.textContent = "copy";
-        btn.addEventListener("click", async () => {
-          await run(() => invoke("copy_to_clipboard", { text }));
-          btn.textContent = "copied";
-          setTimeout(() => (btn.textContent = "copy"), 1200);
-        });
-        pre.appendChild(btn);
+        // Lay Run + Copy out in one top-right flex group so their labels can't
+        // collide (they used to be two hard-coded `right` offsets that overlapped
+        // once a label like "running…" grew past the gap).
+        const tools = document.createElement("div");
+        tools.className = "code-tools";
         if (current.allowRun) {
           // Execute with shell-escaped variable values (fall back to the filled
           // text if raw extraction didn't line up).
@@ -752,15 +819,59 @@
           runBtn.className = "run";
           runBtn.textContent = "▶ run";
           runBtn.title = "Run this command in your shell";
+          runBtn.setAttribute("aria-label", "Run command");
           runBtn.addEventListener("click", () => execBlock(pre, cmd, runBtn));
-          pre.appendChild(runBtn);
+          tools.appendChild(runBtn);
         }
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "copy";
+        btn.textContent = "copy";
+        btn.setAttribute("aria-label", "Copy command");
+        btn.addEventListener("click", async () => {
+          await run(() => invoke("copy_to_clipboard", { text }));
+          btn.textContent = "copied";
+          setTimeout(() => (btn.textContent = "copy"), 1200);
+        });
+        tools.appendChild(btn);
+        pre.appendChild(tools);
+      });
+
+      // Inline code (e.g. `git status` written mid-sentence) gets a small copy
+      // affordance too. Skip <code> inside a <pre> (fenced blocks, handled above)
+      // and inside links/headings — there an injected button would join the link's
+      // click target or mis-size against headline type. Wrap the code + its button
+      // in a nowrap span so the affordance never wraps to a new line, orphaned from
+      // the command it copies. Run stays fenced-only.
+      node.querySelectorAll("code").forEach((codeEl) => {
+        if (codeEl.closest("pre, a, h1, h2, h3, h4, h5, h6")) return;
+        const text = codeEl.textContent; // filled values — human-facing (copy)
+        const wrap = document.createElement("span");
+        wrap.className = "inline-code";
+        codeEl.replaceWith(wrap);
+        wrap.appendChild(codeEl);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "copy-inline";
+        btn.innerHTML = COPY_ICON;
+        btn.title = "Copy";
+        btn.setAttribute("aria-label", "Copy inline command");
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation(); // don't bubble (e.g. into surrounding interactive text)
+          await run(() => invoke("copy_to_clipboard", { text }));
+          btn.innerHTML = CHECK_ICON;
+          setTimeout(() => (btn.innerHTML = COPY_ICON), 1200);
+        });
+        wrap.appendChild(btn);
       });
     }
+
     render();
     return {
       update(p) {
+        const key = keyOf(p);
         current = p;
+        if (key === lastKey) return; // nothing visible changed — keep run-output, skip re-parse
         render();
       },
     };
@@ -873,9 +984,9 @@
     <span class="dot"></span>
     <span class="title">Runebook</span>
     <nav class="tabs">
-      <button class:active={mode === "quick"} on:click={goQuick}>Quick-add</button>
-      <button class:active={mode === "browse"} on:click={() => (mode = "browse")}>Browse</button>
-      <button class:active={mode === "settings"} on:click={() => (mode = "settings")} title="Settings">⚙</button>
+      <button class:active={mode === "quick"} aria-current={mode === "quick" ? "page" : undefined} on:click={goQuick}>Quick-add</button>
+      <button class:active={mode === "browse"} aria-current={mode === "browse" ? "page" : undefined} on:click={() => setMode("browse")}>Browse</button>
+      <button class:active={mode === "settings"} aria-current={mode === "settings" ? "page" : undefined} on:click={() => setMode("settings")} title="Settings" aria-label="Settings">⚙</button>
     </nav>
     <span class="hint">
       {#if mode === "quick"}⌘↵ save &amp; next &middot; {/if}⌘K jump &middot; {hotkey} toggles &middot; Esc hides
@@ -883,13 +994,16 @@
   </header>
 
   {#if error}
-    <p class="error">{error}</p>
+    <p class="error" role="alert">
+      <span>{error}</span>
+      <button class="error-dismiss" title="Dismiss" aria-label="Dismiss error" on:click={() => (error = "")}>✕</button>
+    </p>
   {/if}
 
   {#if paletteOpen}
     <!-- ── Command palette / quick switcher (D14) ───────────────── -->
     <div class="palette-backdrop">
-      <div class="palette" bind:this={paletteCard} role="dialog" aria-label="Quick switcher">
+      <div class="palette" bind:this={paletteCard} role="dialog" aria-modal="true" aria-label="Quick switcher">
         <input
           class="palette-input"
           bind:this={paletteInput}
@@ -937,8 +1051,9 @@
           <button
             type="button"
             class="rb-trigger"
-            aria-haspopup="listbox"
+            aria-haspopup="menu"
             aria-expanded={pickerOpen}
+            aria-label="Choose runbook for new notes"
             on:click={() => (pickerOpen = !pickerOpen)}
           >
             <span class="rb-trigger-label">
@@ -947,17 +1062,20 @@
             <span class="rb-caret" aria-hidden="true">▾</span>
           </button>
           {#if pickerOpen}
-            <ul class="rb-menu" role="listbox">
+            <!-- A menu of real <button>s (not a listbox): putting a button inside
+                 role=option is invalid nesting, so we use menu/menuitem and mark
+                 the current target with aria-current. -->
+            <ul class="rb-menu" role="menu">
               <!-- Always offered, so you can start a fresh note even after one is
                    selected — picking this makes the next save create a new runbook. -->
-              <li role="option" aria-selected={currentRunbookId == null}>
-                <button type="button" class:on={currentRunbookId == null} on:click={() => chooseRunbook(null)}>
+              <li role="none">
+                <button type="button" role="menuitem" aria-current={currentRunbookId == null} class:on={currentRunbookId == null} on:click={() => chooseRunbook(null)}>
                   — new runbook from this note —
                 </button>
               </li>
               {#each runbooks as r (r.id)}
-                <li role="option" aria-selected={currentRunbookId === r.id}>
-                  <button type="button" class:on={currentRunbookId === r.id} on:click={() => chooseRunbook(r.id)}>
+                <li role="none">
+                  <button type="button" role="menuitem" aria-current={currentRunbookId === r.id} class:on={currentRunbookId === r.id} on:click={() => chooseRunbook(r.id)}>
                     {r.title}
                   </button>
                 </li>
@@ -966,7 +1084,7 @@
           {/if}
         </div>
         <form class="new-rb" on:submit|preventDefault={createAndSelect}>
-          <input placeholder="＋ new runbook…" bind:value={newRbName} />
+          <input placeholder="＋ new runbook…" aria-label="Create new runbook" bind:value={newRbName} />
         </form>
       </div>
 
@@ -980,7 +1098,7 @@
 
       <div class="q-foot">
         <button class="primary" on:click={saveAndNext}>Save &amp; next</button>
-        <span class="flash" class:show={flash}>{flash}</span>
+        <span class="flash" class:show={flash && flashScope === "quick"} role="status">{flashScope === "quick" ? flash : ""}</span>
         <span class="counter">
           {#if currentRunbook}→ {currentRunbook.title}{/if}
           {#if addedThisSession > 0}&nbsp;· {addedThisSession} added{/if}
@@ -992,13 +1110,14 @@
     <div class="panes">
       <aside class="list">
         <form class="new" on:submit|preventDefault={createRunbook}>
-          <input placeholder="New runbook title…" bind:value={newRunbookTitle} />
+          <input placeholder="New runbook title…" aria-label="New runbook title" bind:value={newRunbookTitle} />
           <button type="submit" aria-label="Create runbook">＋</button>
         </form>
 
         <input
           class="search"
           placeholder="Search runbooks & steps…"
+          aria-label="Search runbooks and steps"
           bind:value={search}
           on:input={() => loadRunbooks(search)}
         />
@@ -1006,7 +1125,7 @@
         {#if allTags.length > 0}
           <div class="tag-filter">
             {#each allTags as t}
-              <button class="tag-chip" class:on={activeTag === t} on:click={() => toggleTagFilter(t)}>
+              <button class="tag-chip" class:on={activeTag === t} aria-pressed={activeTag === t} on:click={() => toggleTagFilter(t)}>
                 #{t}
               </button>
             {/each}
@@ -1019,7 +1138,7 @@
           <ul>
             {#each displayRunbooks as r (r.id)}
               <li class:active={selected?.id === r.id}>
-                <button class="rb" on:click={() => openRunbook(r.id)}>
+                <button class="rb" aria-current={selected?.id === r.id ? "true" : undefined} on:click={() => openRunbook(r.id)}>
                   <span class="rb-title">{r.title}</span>
                   {#if progressMap[r.id]}
                     <span
@@ -1032,7 +1151,7 @@
                   {/if}
                   {#each r.tags as t}<span class="tag">#{t}</span>{/each}
                 </button>
-                <button class="del" title="Delete" on:click={() => deleteRunbook(r.id)}>✕</button>
+                <button class="del" title="Delete runbook" aria-label="Delete runbook {r.title}" on:click={() => deleteRunbook(r.id)}>✕</button>
               </li>
             {/each}
           </ul>
@@ -1048,6 +1167,7 @@
               <input
                 bind:this={titleInput}
                 bind:value={titleBuffer}
+                aria-label="Runbook title"
                 on:blur={commitTitle}
                 on:keydown={(e) => {
                   if (e.key === "Escape") {
@@ -1060,8 +1180,8 @@
             </form>
           {:else}
             <h2 class="rb-heading">
-              <button class="title-btn" title="Rename runbook" on:click={startEditTitle}>{selected.title}</button>
-              <button class="icon rename" title="Rename runbook" on:click={startEditTitle}>✎</button>
+              <button class="title-btn" title="Rename runbook" aria-label="Rename runbook" on:click={startEditTitle}>{selected.title}</button>
+              <button class="icon rename" title="Rename runbook" aria-label="Rename runbook" on:click={startEditTitle}>✎</button>
             </h2>
           {/if}
 
@@ -1069,17 +1189,17 @@
             {#each selected.tags as t}
               <span class="tag-chip on">
                 #{t}
-                <button class="tag-x" title="Remove tag" on:click={() => removeTag(t)}>✕</button>
+                <button class="tag-x" title="Remove tag" aria-label="Remove tag {t}" on:click={() => removeTag(t)}>✕</button>
               </span>
             {/each}
             <form on:submit|preventDefault={addTag}>
-              <input class="tag-input" placeholder="＋ tag" bind:value={newTag} />
+              <input class="tag-input" placeholder="＋ tag" aria-label="Add tag" bind:value={newTag} />
             </form>
             <span class="export-actions">
               <button class="ghost sm" on:click={copyMarkdown}>Copy .md</button>
               <button class="ghost sm" on:click={saveMarkdown}>Save .md</button>
             </span>
-            <span class="flash" class:show={flash}>{flash}</span>
+            <span class="flash" class:show={flash && flashScope === "browse"} role="status">{flashScope === "browse" ? flash : ""}</span>
           </div>
 
           <!-- Project pinning (D15): the folder commands run in. -->
@@ -1087,7 +1207,7 @@
             {#if selected.projectDir}
               <span class="pin-chip" title="Run buttons execute commands here">
                 📁 <span class="pin-path">{selected.projectDir}</span>
-                <button class="tag-x" title="Unpin folder" on:click={unpinFolder}>✕</button>
+                <button class="tag-x" title="Unpin folder" aria-label="Unpin folder" on:click={unpinFolder}>✕</button>
               </span>
             {:else}
               <button class="ghost sm" on:click={pinFolder}>📁 Pin to folder…</button>
@@ -1098,17 +1218,22 @@
             <div class="vars">
               <span class="vars-label">Variables</span>
               {#each varNames as name (name)}
-                <label class="var">
-                  <span class="var-name">{name}</span>
+                <!-- A div (not <label>) so it doesn't wrap both the input and the
+                     secret button; the input is named explicitly via aria-label. -->
+                <div class="var">
+                  <span class="var-name" aria-hidden="true">{name}</span>
                   <input
                     use:inputType={secretVars.has(name)}
                     placeholder={`{{${name}}}`}
+                    aria-label={`Value for ${name}`}
                     bind:value={varValues[name]}
                   />
                   <button
                     type="button"
                     class="var-secret"
                     class:on={secretVars.has(name)}
+                    aria-pressed={secretVars.has(name)}
+                    aria-label={secretVars.has(name) ? `${name}: secret (masked, not saved)` : `Mark ${name} secret`}
                     title={secretVars.has(name)
                       ? "Secret — masked, never saved to a profile"
                       : "Mark as secret"}
@@ -1116,7 +1241,7 @@
                   >
                     🔒
                   </button>
-                </label>
+                </div>
               {/each}
 
               <!-- Profiles: named value sets (e.g. prod / staging). Click to
@@ -1125,12 +1250,12 @@
                 <span class="vars-label">Profiles</span>
                 {#each varProfiles as p (p)}
                   <span class="tag-chip prof" class:on={activeProfile === p}>
-                    <button class="prof-load" on:click={() => applyProfile(p)}>{p}</button>
-                    <button class="tag-x" title="Delete profile" on:click={() => deleteProfile(p)}>✕</button>
+                    <button class="prof-load" aria-label={`Apply profile ${p}`} on:click={() => applyProfile(p)}>{p}</button>
+                    <button class="tag-x" title="Delete profile" aria-label={`Delete profile ${p}`} on:click={() => deleteProfile(p)}>✕</button>
                   </span>
                 {/each}
                 <form class="prof-save" on:submit|preventDefault={saveProfile}>
-                  <input class="tag-input" placeholder="＋ save as…" bind:value={newProfileName} />
+                  <input class="tag-input" placeholder="＋ save as…" aria-label="Save current values as a profile" bind:value={newProfileName} />
                 </form>
               </div>
             </div>
@@ -1139,7 +1264,7 @@
           {#if selected.steps.length > 1}
             <!-- Replay (D10): work the runbook as a checklist; progress persists. -->
             <div class="replay-bar">
-              <button class="ghost sm replay-toggle" class:on={replayMode} on:click={toggleReplay}>
+              <button class="ghost sm replay-toggle" class:on={replayMode} aria-pressed={replayMode} on:click={toggleReplay}>
                 {replayMode ? "✓ Replaying" : "▶ Replay"}
               </button>
               {#if replayMode}
@@ -1192,6 +1317,7 @@
                           class="step-check"
                           checked={s.done}
                           title="Mark this step done"
+                          aria-label={`Mark step ${i + 1} done: ${s.title?.trim() || deriveLabel(s.body, i)}`}
                           on:change={(e) => setStepDone(s, e.target.checked)}
                         />
                       {/if}
@@ -1200,11 +1326,11 @@
                       {/if}
                       <span class="step-tools">
                         {#if selected.steps.length > 1}
-                          <button class="icon" title="Move up" on:click={() => moveStep(i, -1)}>↑</button>
-                          <button class="icon" title="Move down" on:click={() => moveStep(i, 1)}>↓</button>
+                          <button class="icon" title="Move up" aria-label={`Move step ${i + 1} up`} on:click={() => moveStep(i, -1)}>↑</button>
+                          <button class="icon" title="Move down" aria-label={`Move step ${i + 1} down`} on:click={() => moveStep(i, 1)}>↓</button>
                         {/if}
-                        <button class="icon" title="Edit" on:click={() => startEdit(s)}>✎</button>
-                        <button class="icon" title="Delete" on:click={() => deleteStep(s.id)}>✕</button>
+                        <button class="icon" title="Edit" aria-label={`Edit step ${i + 1}`} on:click={() => startEdit(s)}>✎</button>
+                        <button class="icon" title="Delete" aria-label={`Delete step ${i + 1}`} on:click={() => deleteStep(s.id)}>✕</button>
                       </span>
                     </div>
                     {#if s.body.trim()}
@@ -1248,8 +1374,8 @@
       </div>
 
       <div class="setting">
-        <label>Accent</label>
-        <div class="swatches">
+        <span class="setting-label" id="accent-label">Accent</span>
+        <div class="swatches" role="group" aria-labelledby="accent-label">
           {#each ACCENTS as a}
             <button
               class="swatch"
@@ -1271,7 +1397,7 @@
       </div>
 
       <div class="setting">
-        <label>Execution</label>
+        <span class="setting-label">Execution</span>
         <label class="checkbox">
           <input type="checkbox" checked={allowRun} on:change={toggleAllowRun} />
           Enable Run buttons (execute commands from steps)
@@ -1284,7 +1410,7 @@
       </div>
 
       <div class="setting">
-        <label>Data</label>
+        <span class="setting-label">Data</span>
         <div class="hotkey-row">
           <button on:click={backupDatabase}>Back up database…</button>
           <button class="ghost" on:click={restoreDatabase}>Restore…</button>
@@ -1296,7 +1422,7 @@
       </div>
 
       <div class="setting">
-        <label>Git sync</label>
+        <span class="setting-label">Git sync</span>
         <p class="setting-hint">
           Export every runbook as Markdown into a folder and commit it with git
           (one <code>.md</code> per runbook under <code>runbooks/</code>). Push is
@@ -1311,7 +1437,7 @@
         {#if gitStatus}<p class="setting-hint git-status">{gitStatus}</p>{/if}
       </div>
 
-      <span class="flash" class:show={flash}>{flash}</span>
+      <span class="flash" class:show={flash && flashScope === "settings"} role="status">{flashScope === "settings" ? flash : ""}</span>
     </section>
   {/if}
 </main>

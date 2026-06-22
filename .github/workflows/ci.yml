@@ -1,0 +1,139 @@
+name: CI
+
+# Correctness gate for every push and PR to main:
+#   - the four version files agree,
+#   - frontend builds (Vite),
+#   - both Rust crates format-check, lint (clippy), and test,
+#   - src-tauri release-builds (exercises the path release.yml's bundler needs).
+#
+# src-tauri/ needs the Tauri Linux system libs to compile; mcp-server/ does not
+# (it has no Tauri/webkit deps), but installing the deps once for the whole job
+# keeps things simple and lets a single runner check everything.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Avoid piling up redundant runs on rapid pushes to the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Build, lint & test
+    # Match the release runner so CI builds against the same toolchain/libs.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Cheap insurance: catch version drift on a PR instead of at release time.
+      - name: Verify all four version files agree
+        run: |
+          set -euo pipefail
+          pj="$(grep -m1 '"version"' package.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+          tc="$(grep -m1 '"version"' src-tauri/tauri.conf.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+          st="$(grep -m1 -E '^version[[:space:]]*=' src-tauri/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          mc="$(grep -m1 -E '^version[[:space:]]*=' mcp-server/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          echo "package.json=$pj tauri.conf.json=$tc src-tauri/Cargo.toml=$st mcp-server/Cargo.toml=$mc"
+          if [ "$pj" = "$tc" ] && [ "$pj" = "$st" ] && [ "$pj" = "$mc" ]; then
+            echo "OK: all versions match ($pj)."
+          else
+            echo "::error::version drift across files (package.json=$pj tauri.conf.json=$tc src-tauri/Cargo.toml=$st mcp-server/Cargo.toml=$mc)"
+            exit 1
+          fi
+
+      - name: Install Tauri v2 Linux build dependencies
+        # Retry apt to ride out transient mirror flakiness on hosted runners.
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do sudo apt-get update && break; echo "apt-get update retry $i"; sleep 5; done
+          for i in 1 2 3; do
+            sudo apt-get install -y \
+              libwebkit2gtk-4.1-dev \
+              libgtk-3-dev \
+              libayatana-appindicator3-dev \
+              librsvg2-dev \
+              patchelf \
+              file \
+              build-essential \
+              curl \
+              wget && break
+            echo "apt-get install retry $i"; sleep 5
+          done
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust (stable + rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Two independent crates, no root workspace — cache both target dirs.
+          # mcp-server compiles src-tauri/src/db.rs via #[path], which its own
+          # Cargo.lock does not reflect — fold db.rs into the key so a db.rs-only
+          # edit invalidates the mcp-server cache too.
+          workspaces: |
+            ./src-tauri -> target
+            ./mcp-server -> target
+          key: ${{ hashFiles('src-tauri/src/db.rs') }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend build (Vite -> dist/)
+        # Validates the Svelte/Vite frontend. tauri build relies on this output.
+        run: npm run build
+
+      # ── src-tauri (the Tauri app) ────────────────────────────────────────────
+      # --locked on every cargo invocation: a desynced/stale Cargo.lock fails CI
+      # loudly instead of being silently regenerated. This is what catches a bad
+      # release commit (e.g. release.sh's lock refresh having failed) at PR time.
+      - name: src-tauri — cargo fmt --check
+        working-directory: src-tauri
+        run: cargo fmt --all --check
+
+      - name: src-tauri — cargo clippy
+        working-directory: src-tauri
+        # Treat warnings as errors so lint regressions fail the build.
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: src-tauri — cargo test
+        working-directory: src-tauri
+        run: cargo test --locked --all-targets
+
+      # Exercise the release build path so a bundle-only break (bad icon path,
+      # tauri.conf.json bundle field, etc.) fails a PR rather than a release tag.
+      - name: src-tauri — cargo build --release
+        working-directory: src-tauri
+        run: cargo build --locked --release
+
+      # ── mcp-server (standalone MCP binary) ───────────────────────────────────
+      - name: mcp-server — cargo fmt --check
+        working-directory: mcp-server
+        run: cargo fmt --all --check
+
+      - name: mcp-server — cargo clippy
+        working-directory: mcp-server
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: mcp-server — cargo test
+        working-directory: mcp-server
+        run: cargo test --locked --all-targets

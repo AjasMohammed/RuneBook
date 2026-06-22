@@ -125,6 +125,7 @@ Same shape — a stdio server with a `command` (the binary) and optional `args` 
 | `get_runbook` | `id` | JSON runbook with all steps (`id`, `position`, `title`, `body`). |
 | `export_runbook_markdown` | `id` | One portable Markdown document for the runbook. |
 | `create_runbook` | `title`, `description?`, `tags?` | `{ ok, id }` |
+| `create_report` | `title`, `body`, `description?`, `tags?` | `{ ok, id }` — an AI-authored **report** (D17): a `kind='report'` runbook whose Markdown `body` is rendered read-only in the app (callouts, TOC, copy-only code blocks). Prefer over emitting a standalone HTML file. |
 | `update_runbook` | `id`, `title?`, `description?`, `tags?` | `{ ok, id }` (only passed fields change; `tags` replaces the set) |
 | `delete_runbook` | `id` | `{ ok, id }` — **destructive** (cascades to steps) |
 | `add_step` | `runbook_id`, `title?`, `body?` (at least one of title/body) | `{ ok, id }` — appends to the end |

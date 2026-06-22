@@ -35,6 +35,23 @@ starts hidden and lives in the tray.
 Runtime dependencies (resolved automatically by `apt`): `libwebkit2gtk-4.1-0`,
 `libayatana-appindicator3-1`, `libgtk-3-0`. To uninstall: `sudo apt remove runebook`.
 
+### Updating
+
+Update an installed copy to the latest release with one command:
+
+```bash
+npm run update     # from a checked-out repo
+
+# …or without the repo — download, read it, then run (don't blind-pipe to bash):
+curl -fsSL https://raw.githubusercontent.com/AjasMohammed/RuneBook/main/scripts/update.sh -o update.sh
+less update.sh && bash update.sh
+```
+
+It checks the latest GitHub Release, compares it to your installed version, verifies
+the download against the release's `SHA256SUMS`, and — only if it's newer, after one
+`sudo` prompt — installs the new `.deb`. `--check` reports without installing (exit
+`10` if an update is available); `--yes` skips the prompt.
+
 ### Build from source
 
 Requires Rust, Node 22, and the Tauri Linux dev libraries
@@ -48,6 +65,23 @@ npm run tauri build      # bundles a .deb under src-tauri/target/release/bundle/
 # …or for development:
 npm run tauri dev        # Vite (port 1420) + the overlay
 ```
+
+### Releasing (maintainers)
+
+Releases are built and published by GitHub Actions. To cut one:
+
+```bash
+npm run release 0.2.0    # bumps all four version files, commits, tags v0.2.0, pushes
+```
+
+Pushing the `v*` tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml),
+which builds the Linux `.deb` (plus the standalone `runebook-mcp` binary and a
+`SHA256SUMS`) and attaches them to a GitHub Release for the tag. `npm run release`
+refuses a dirty tree or an existing tag and keeps `package.json`,
+`src-tauri/tauri.conf.json`, and both `Cargo.toml`s in lockstep (`--dry-run` to
+preview, `--no-push` to tag locally). Every push/PR to `main` is gated by
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) — version-consistency, `fmt`,
+`clippy`, tests, and the frontend + release build.
 
 ## Core idea
 

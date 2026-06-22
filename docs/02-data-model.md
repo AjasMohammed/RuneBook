@@ -58,6 +58,9 @@ Tracked by `PRAGMA user_version` in the Rust core (`src-tauri/src/db.rs`):
 - **v5** — `step_progress` for replay checklists ([05-decisions.md](05-decisions.md) D10).
 - **v6** — `var_profile` for variable profiles (D12).
 - **v7** — `runbook.project_dir` column for project pinning / run cwd (D15).
+- **v8** — `runbook.kind` column (`'runbook'` default | `'report'`) for AI reports
+  ([05-decisions.md](05-decisions.md) D17). A report is a `kind='report'` runbook
+  whose single step body holds a Markdown document, rendered read-only in the app.
 
 Code blocks live inside the markdown body itself (```` ``` ````), so commands no
 longer need their own column — the UI renders them with a per-block copy button.
@@ -137,6 +140,7 @@ type Runbook = {
   title: string;
   description: string;
   tags: string[];
+  kind: string;        // "runbook" (default) | "report" — AI-authored doc (D17)
   projectDir: string;  // pinned dir / run cwd (D15); "" when unpinned, "" in list views
   steps: Step[];
   createdAt: string;

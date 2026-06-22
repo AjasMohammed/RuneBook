@@ -1,0 +1,212 @@
+name: Release
+
+# Cut a release by pushing a tag like `v0.2.0` (see scripts/release.sh, which
+# does the version bump + tag + push for you). This workflow then:
+#   1. verifies the pushed tag matches the version baked into all four files,
+#   2. builds the standalone `runebook-mcp` binary,
+#   3. builds the Tauri desktop app into a Linux `.deb`,
+#   4. creates the GitHub Release for that tag and attaches BOTH assets at once,
+#   5. attaches a SHA256SUMS file so update.sh can verify downloads.
+#
+# The mcp-server/ crate is a *separate* binary (no Tauri/webkit deps) and is NOT
+# bundled by tauri-action. We build it FIRST (so a broken MCP build fails before
+# anything is published), let tauri-action publish the Release with the .deb,
+# then attach the runebook-mcp binary and a SHA256SUMS file to that same Release
+# in the steps that follow. tauri-action has no input for arbitrary extra files.
+
+on:
+  push:
+    tags:
+      - 'v*' # e.g. v0.1.0, v0.2.0 — must match the app version (sans the leading v)
+
+# Required so tauri-action / gh can create the Release and upload assets.
+# Without `contents: write`, asset upload fails with HTTP 403.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish Linux .deb + MCP server
+    # ubuntu-22.04 ON PURPOSE — do NOT use ubuntu-latest:
+    #   - 22.04 ships libwebkit2gtk-4.1-dev (Tauri v2's requirement) in its repos.
+    #   - it keeps the .deb's minimum glibc low, so the package installs on more
+    #     systems. Building on 24.04 raises the glibc floor and shrinks that set.
+    # This runner is x86-64 Linux only, so the produced asset is amd64 only
+    # (Runebook_<version>_amd64.deb). There is no arm64 release path today.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Fail fast if the tag disagrees with the version files ────────────────
+      # tauri-action builds the .deb from src-tauri/tauri.conf.json's version.
+      # If a tag is ever pushed by hand (not via scripts/release.sh) that doesn't
+      # match the files, the Release would be named for the tag but ship a .deb
+      # with a different dpkg Version — and update.sh's post-install verify would
+      # then fail confusingly on the user's machine. Catch it here instead.
+      - name: Verify tag matches all version files
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "Tag version: ${TAG}"
+          fail=0
+          for f in package.json src-tauri/tauri.conf.json; do
+            V="$(grep -m1 '"version"' "$f" | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+            if [ "$V" != "$TAG" ]; then
+              echo "::error file=${f}::version ${V} != tag ${TAG}"
+              fail=1
+            fi
+          done
+          for f in src-tauri/Cargo.toml mcp-server/Cargo.toml; do
+            if ! grep -Eq "^version[[:space:]]*=[[:space:]]*\"${TAG//./\\.}\"" "$f"; then
+              echo "::error file=${f}::[package] version != tag ${TAG}"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || { echo "Tag/version mismatch — refusing to release."; exit 1; }
+          echo "All four version files agree with tag v${TAG}."
+
+      - name: Install Tauri v2 Linux build dependencies
+        # libayatana-appindicator3-dev is REQUIRED (not optional): this app has a
+        # system tray. patchelf + file are needed at the bundling stage.
+        # (libssl-dev/pkg-config are not needed: rusqlite is `bundled` via cc, and
+        #  webkit2gtk-4.1-dev transitively pulls libsoup-3.0-dev + pkg-config.)
+        # Retry apt to ride out transient mirror flakiness on hosted runners.
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do sudo apt-get update && break; echo "apt-get update retry $i"; sleep 5; done
+          for i in 1 2 3; do
+            sudo apt-get install -y \
+              libwebkit2gtk-4.1-dev \
+              libgtk-3-dev \
+              libayatana-appindicator3-dev \
+              librsvg2-dev \
+              patchelf \
+              file \
+              build-essential \
+              curl \
+              wget && break
+            echo "apt-get install retry $i"; sleep 5
+          done
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # No root Cargo workspace here; src-tauri/ and mcp-server/ are separate
+          # crates. Cache both target dirs, keyed on each crate's Cargo.lock.
+          # mcp-server compiles src-tauri/src/db.rs via #[path], which its own
+          # Cargo.lock does not reflect — fold db.rs into the key so a db.rs-only
+          # edit invalidates the mcp-server cache too.
+          workspaces: |
+            ./src-tauri -> target
+            ./mcp-server -> target
+          key: ${{ hashFiles('src-tauri/src/db.rs') }}
+
+      - name: Install frontend dependencies
+        # tauri-action does NOT install JS deps for you. The actual `vite build`
+        # is run automatically by `tauri build` via tauri.conf.json's
+        # beforeBuildCommand ("npm run build"), so we only need the deps present.
+        run: npm ci
+
+      # ── Build the standalone MCP server FIRST so a broken MCP build fails the ──
+      # job BEFORE tauri-action publishes anything. Separate crate, no Tauri deps;
+      # --locked so a desynced Cargo.lock fails the release loudly, not silently.
+      - name: Build the standalone MCP server (runebook-mcp)
+        working-directory: mcp-server
+        run: cargo build --release --locked
+
+      - name: Stage runebook-mcp with a versioned, arch-tagged name
+        # Give the MCP binary a name that mirrors the .deb's versioned, arch-
+        # tagged scheme (Runebook_<ver>_amd64.deb) so users can tell which build
+        # they downloaded.
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          cp mcp-server/target/release/runebook-mcp \
+             "dist-release/runebook-mcp-${GITHUB_REF_NAME}-x86_64-linux"
+
+      - name: Build Tauri app & publish the .deb to a GitHub Release
+        # tauri-action runs `tauri build`, produces the .deb, then creates the
+        # Release for the pushed tag and uploads the .deb to it. tauri-action has
+        # no input for attaching arbitrary extra files, so the runebook-mcp binary
+        # and SHA256SUMS are added by the steps below, against the release this
+        # step creates (the tag/release exist once this step finishes).
+        # Pinned to a stable release; v0.6 floats patches.
+        uses: tauri-apps/tauri-action@v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Reuse the tag we just pushed instead of minting a new one from the
+          # app version, keeping the pushed tag (e.g. v0.1.0) authoritative.
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Runebook ${{ github.ref_name }}'
+          releaseBody: |
+            Linux `.deb` (x86-64) for Runebook ${{ github.ref_name }}.
+
+            **Install / update (inspect before running):**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/AjasMohammed/RuneBook/main/scripts/update.sh -o update.sh
+            less update.sh        # review what it does
+            bash update.sh        # installs the latest .deb (asks for sudo once)
+            ```
+            …or download the `.deb` below and run `sudo apt install ./<file>.deb`.
+
+            Also attached: `runebook-mcp-${{ github.ref_name }}-x86_64-linux`
+            (the standalone MCP stdio server binary) and `SHA256SUMS`.
+          # Publish the Release now (with the .deb). The MCP binary + SHA256SUMS are
+          # attached by the steps below; update.sh only needs the .deb, so the brief
+          # window before those land doesn't affect updating.
+          releaseDraft: false
+          # Derive the prerelease flag from the tag: a tag containing a hyphen
+          # (e.g. v1.0.0-rc.1) publishes as a GitHub prerelease, so /releases/latest
+          # skips it and update.sh won't auto-install it. scripts/release.sh only
+          # cuts plain X.Y.Z today, so this is defense-in-depth for hand-pushed tags.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          # The Tauri app lives in ./src-tauri (auto-detected); be explicit.
+          projectPath: .
+          # Linux-only / deb-only build (tauri.conf.json already targets "deb").
+          args: --bundles deb
+
+      # ── Attach the standalone MCP binary to the just-published Release ────────
+      # tauri-action published the Release (releaseDraft: false) with the .deb, so
+      # the tag/release now exist and `gh release upload` can target them by tag.
+      # --clobber keeps re-runs idempotent. update.sh does NOT need this asset
+      # (it only installs the .deb), so a failure here doesn't break updating.
+      - name: Attach runebook-mcp to the GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "${GITHUB_REF_NAME}" \
+            "dist-release/runebook-mcp-${GITHUB_REF_NAME}-x86_64-linux" \
+            --repo "${{ github.repository }}" \
+            --clobber
+
+      # ── Checksums: publish SHA256SUMS so update.sh can verify the .deb ───────
+      # The Release already exists (created above); append SHA256SUMS to it.
+      # --clobber makes re-runs idempotent.
+      - name: Generate and attach SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          deb="$(ls src-tauri/target/release/bundle/deb/*.deb)"
+          mcp="dist-release/runebook-mcp-${GITHUB_REF_NAME}-x86_64-linux"
+          {
+            ( cd "$(dirname "$deb")" && sha256sum "$(basename "$deb")" )
+            ( cd "$(dirname "$mcp")" && sha256sum "$(basename "$mcp")" )
+          } > SHA256SUMS
+          echo "----- SHA256SUMS -----"; cat SHA256SUMS
+          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS \
+            --repo "${{ github.repository }}" \
+            --clobber

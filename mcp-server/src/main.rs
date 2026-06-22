@@ -244,7 +244,11 @@ fn initialize_result(params: &Value) -> Value {
         "instructions": "Runebook is the user's personal scratchpad of runbooks \
             (named, step-by-step procedures) and markdown notes. Use list_runbooks \
             to search before reinventing a procedure; get_runbook to read one; and \
-            create_runbook / add_step to capture a workflow the user just performed."
+            create_runbook / add_step to capture a workflow the user just performed. \
+            When the user asks for a written report — a project introduction, a summary \
+            of the changes you made, an analysis — call create_report with a single \
+            Markdown document instead of writing a standalone HTML file; it renders \
+            richly and interactively inside the Runebook app."
     })
 }
 
@@ -256,6 +260,7 @@ fn initialize_result(params: &Value) -> Value {
 /// neither advertised (`tool_definitions`) nor executed (`dispatch`).
 const MUTATING_TOOLS: &[&str] = &[
     "create_runbook",
+    "create_report",
     "update_runbook",
     "delete_runbook",
     "add_step",
@@ -324,6 +329,30 @@ fn tool_definitions(read_only: bool) -> Value {
                     "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional tags for filtering." }
                 },
                 "required": ["title"]
+            }
+        }),
+        json!({
+            "name": "create_report",
+            "description": "Create a visual REPORT for the user to read inside the Runebook app — \
+                e.g. a project introduction / onboarding doc, a summary of the changes you just made, \
+                or an analysis. Prefer this over writing a standalone .html file: the report is saved \
+                in Runebook and rendered with the app's typography, an auto table of contents, styled \
+                callouts, and one-click-copy code blocks. `body` is ONE self-contained Markdown \
+                document. You may use: GitHub-style callouts (a blockquote starting with `[!NOTE]`, \
+                `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, or `[!CAUTION]`); `##`/`###` headings (used to \
+                build the table of contents); tables; `<details><summary>…</summary>…</details>` for \
+                collapsible sections; and fenced ``` code blocks (each gets a copy button). Returns the \
+                new report's id. The report is read-only in the app — put commands in code blocks so the \
+                user can copy them.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Report title, e.g. \"Project Overview: Runebook\"." },
+                    "body": { "type": "string", "description": "The full report as a single Markdown document." },
+                    "description": { "type": "string", "description": "Optional one-line subtitle / summary." },
+                    "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional tags for filtering." }
+                },
+                "required": ["title", "body"]
             }
         }),
         json!({
@@ -430,6 +459,7 @@ fn dispatch(conn: &Connection, name: &str, args: &Value) -> Result<String, Strin
                         "title": r.title,
                         "description": r.description,
                         "tags": r.tags,
+                        "kind": r.kind,
                         "createdAt": r.created_at,
                         "updatedAt": r.updated_at
                     })
@@ -445,6 +475,7 @@ fn dispatch(conn: &Connection, name: &str, args: &Value) -> Result<String, Strin
                     "title": rb.title,
                     "description": rb.description,
                     "tags": rb.tags,
+                    "kind": rb.kind,
                     "createdAt": rb.created_at,
                     "updatedAt": rb.updated_at,
                     "steps": rb.steps.iter().map(|s| json!({
@@ -470,6 +501,15 @@ fn dispatch(conn: &Connection, name: &str, args: &Value) -> Result<String, Strin
             let description = args.get("description").and_then(Value::as_str);
             let tags = parse_tags(args);
             let id = db::create_runbook(conn, title, tags.as_deref(), description)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "ok": true, "id": id }).to_string())
+        }
+        "create_report" => {
+            let title = require_str(args, "title")?;
+            let body = require_str(args, "body")?;
+            let description = args.get("description").and_then(Value::as_str);
+            let tags = parse_tags(args);
+            let id = db::create_report(conn, title, body, tags.as_deref(), description)
                 .map_err(|e| e.to_string())?;
             Ok(json!({ "ok": true, "id": id }).to_string())
         }
@@ -612,7 +652,7 @@ mod tests {
 
     #[test]
     fn tool_list_filtered_by_read_only() {
-        assert_eq!(tool_definitions(false).as_array().unwrap().len(), 9);
+        assert_eq!(tool_definitions(false).as_array().unwrap().len(), 10);
         let ro = tool_definitions(true);
         assert_eq!(ro.as_array().unwrap().len(), 3);
         for t in ro.as_array().unwrap() {
@@ -677,6 +717,35 @@ mod tests {
         // Happy delete leaves it gone.
         assert!(call(&conn, "delete_runbook", json!({ "id": rid })).is_ok());
         assert!(call(&conn, "get_runbook", json!({ "id": rid })).is_err());
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn create_report_round_trip() {
+        let (conn, path) = temp_db();
+
+        // body is required (title alone is not enough for a report).
+        assert!(call(&conn, "create_report", json!({ "title": "Overview" })).is_err());
+
+        let created = call(
+            &conn,
+            "create_report",
+            json!({ "title": "Overview", "body": "# Hi\n\n```sh\nls\n```", "tags": ["docs"] }),
+        )
+        .unwrap();
+        let rid = serde_json::from_str::<Value>(&created).unwrap()["id"]
+            .as_i64()
+            .unwrap();
+
+        // It reads back as a report whose Markdown is captured as one step.
+        let got = call(&conn, "get_runbook", json!({ "id": rid })).unwrap();
+        assert!(got.contains("\"kind\": \"report\""));
+        assert!(got.contains("# Hi"));
+        // And it surfaces in search like any other runbook.
+        assert!(call(&conn, "list_runbooks", json!({ "query": "Overview" }))
+            .unwrap()
+            .contains("\"kind\": \"report\""));
 
         cleanup(&path);
     }

@@ -3,6 +3,9 @@ dist
 .DS_Store
 *.log
 
+# Playwright MCP debug artifacts (console logs, page snapshots)
+.playwright-mcp/
+
 # Rust / Tauri build artifacts
 src-tauri/target
 src-tauri/gen

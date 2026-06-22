@@ -43,11 +43,14 @@ See [CLAUDE.md](../CLAUDE.md) → "Memory" for the node/edge schema and conventi
 - [[variable-profiles]] — Phase 6/D12: named prod/staging value sets per runbook (`var_profile`, v6); secret vars masked & never persisted
 - [[command-palette]] — Phase 8/D14: ⌘K modal, client-side title/tag filter, ↑↓/↵ to jump; not FTS (that's the Browse search)
 - [[project-pinning]] — Phase 8/D15: pin a runbook to a dir (`project_dir`, v7); used as the Run cwd; no auto-surface-by-cwd
+- [[markdown-render-key-guard]] — the `markdown` action re-rendered (and wiped run-output) on every var keystroke; now skips render unless the visible output changes
+- [[ui-theming-tokens]] — 2026-06: bundled Hanken/Space Grotesk via @fontsource; accent tints are JS-set `--accent-soft`/`--accent-line` so they follow the runtime accent; `--ok`/`--err` are semantic, not the accent
 
 ### Environment & Build
 - [[x11-target]] — X11 confirmed; transparency + global shortcuts work, no Wayland hacks
 - [[webkit-41-dev-missing]] — RESOLVED: 4.1 dev headers now installed; `cargo check` compiles
 - [[production-readiness]] — 2026-06-18: verified `.deb` bundle + real icons + run_command timeout; the one gate left is that the live app has never been run (needs X11)
+- [[release-ci-and-self-update]] — GitHub Actions (ci.yml + release.yml on `v*` tag) + `scripts/update.sh`/`release.sh`; CLI self-update because Tauri's updater is AppImage-only; tauri-action has no `includeFiles`; dpkg orders `-rc.1` above GA
 - [[svelte-dynamic-input-type]] — Svelte 4 rejects dynamic `type` + `bind:value`; set `.type` via a `use:` action
 - [[db-rs-shared-with-mcp]] — `db.rs` is `#[path]`-included by the MCP binary; changing a shared struct can break the MCP build (check both crates)
 - [[pipe-masks-exit-code]] — `cargo … | tail` reports tail's exit code, not cargo's; verify from output text, not exit code

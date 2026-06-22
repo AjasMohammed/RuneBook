@@ -263,8 +263,8 @@
   /* Active formatting at the caret is highlighted in the accent. */
   .md-tool.on {
     color: var(--accent);
-    border-color: rgba(232, 93, 4, 0.5);
-    background: rgba(232, 93, 4, 0.12);
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
   }
 
   /* Inline link-URL entry */
@@ -330,6 +330,7 @@
   .md-prose :global(.ProseMirror h1),
   .md-prose :global(.ProseMirror h2),
   .md-prose :global(.ProseMirror h3) {
+    font-family: var(--font-display);
     font-size: 15px;
     font-weight: 700;
     margin: 12px 0 4px;

@@ -184,6 +184,51 @@ optional `push`) in that folder. Decisions:
   by the user picking a folder + clicking sync. Note: a malicious repo's git hooks
   could run on commit — acceptable since the user chose the folder.
 
+### D17 — AI reports are richly-rendered Markdown documents stored as runbooks
+An AI connected over the MCP server (D13) can author a **report** — a project
+introduction, a "what changed" summary, an analysis — that the user reads *inside*
+Runebook, instead of generating a throwaway standalone HTML file. Decisions:
+
+- **A report is a `kind='report'` runbook, not a new entity.** Migration v8 adds a
+  `kind TEXT NOT NULL DEFAULT 'runbook'` column to `runbook`; a report is a runbook
+  with `kind='report'` whose single step body holds the whole Markdown document.
+  This reuses *all* of runbook storage, FTS search, and Markdown export rather than
+  forking a parallel `report` table — matching the "shape is emergent" philosophy
+  of D9. It is created with `db::create_report` (one INSERT + one `add_step`).
+- **One new MCP tool: `create_report(title, body, tags?, description?)`.** Its
+  verbose description teaches the agent the house format so "make a dev intro / a
+  summary of my changes" reliably produces a self-contained Markdown doc using the
+  blocks Runebook renders richly. It is a mutating tool (hidden under
+  `RUNEBOOK_MCP_READONLY=1`, like the other writers).
+- **Rendering is rich but safe.** The app renders the report body through the same
+  `marked` + per-code-block-copy pipeline as steps, plus a report-only enrichment
+  pass: GitHub-style callouts (`> [!NOTE]`/`[!TIP]`/`[!IMPORTANT]`/`[!WARNING]`/
+  `[!CAUTION]`), a table of contents auto-built from headings, and `<details>`
+  collapsibles — all styled with the existing design tokens so a report is
+  automatically on-brand (unlike a raw AI HTML file, which clashes). **Crucially,
+  because a report body is AI/agent-authored, the parsed HTML is sanitized with
+  DOMPurify before it ever reaches `innerHTML`** — `<script>`, inline event
+  handlers, and other injection vectors are stripped. Sanitization was added to the
+  shared `markdown` action, so ordinary steps (also writable over MCP) are hardened
+  too. This is the security boundary the feature turns on.
+- **A report is a read-only reading view, copy-only.** Opening a `kind='report'`
+  runbook shows a dedicated reading layout (badge, title, TOC, rendered body, Copy/
+  Save `.md`) instead of the step/replay/variable chrome. Code blocks keep their
+  one-click **copy** button but **not** the ▶ run button (D11): an AI-authored
+  document is to be read and copied from, not executed wholesale.
+- **Surfacing.** The MCP server and the overlay are separate processes (D13) with no
+  IPC channel, so a freshly written report can't be pushed to the overlay live; it
+  appears the next time the Browse list loads (re-query on summon). A live DB-watch /
+  tray notification is a deliberate future, out of scope for the first slice.
+- **Not implemented in the first slice (deferred):** Mermaid diagram rendering (the
+  biggest extra visual win, but a heavy JS dependency — load it via dynamic import
+  later so the base bundle stays light per D1); an "AI HTML in a sandboxed iframe"
+  escape hatch for fully free-form output (rejected as the default: large security
+  surface, ignores the design tokens, and breaks the IPC-routed copy buttons).
+
+This narrows open question **Q4** for AI-authored content: reports render sanitized,
+and code blocks in them are copy-only (never auto-run).
+
 ## Open questions
 
 ### Q1 — UI framework

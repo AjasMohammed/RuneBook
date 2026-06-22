@@ -26,3 +26,15 @@ The button calls the Rust **`copy_to_clipboard`** IPC command (backed by
 stays in the core per the [[ipc-boundary]] rule, not `navigator.clipboard`. This
 copy capability was brought forward from Phase 3 because it's now core to the
 view.
+
+**Inline code also gets a copy button now (2026-06-18).** First real-run feedback
+exposed a discoverability gap: the user typed commands as **plain paragraph text**
+(e.g. `git status`, not a fenced block), so no `<pre>` was produced and **no copy
+button appeared** — the headline feature looked broken. The buttons were never
+broken; they only ever attach to fenced blocks. Fix (user picked it from 3
+options): the `markdown` action also walks `node.querySelectorAll("code")`,
+skips any `code.closest("pre")` (fenced, handled above), and appends a small
+`.copy-inline` glyph button (⧉ → ✓) after each inline `<code>`. **▶ run stays
+fenced-only** — running mid-sentence code makes no sense. NOTE the real trap for
+users: a command must still be *some* kind of code (inline `</>` or fenced `{ }`
+in the editor toolbar) — **bare paragraph text gets no copy button**, by design.

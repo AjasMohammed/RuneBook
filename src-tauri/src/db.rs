@@ -148,6 +148,17 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
         conn.execute_batch("PRAGMA user_version = 7;")?;
     }
+    if version < 8 {
+        // AI reports (docs D17): a `kind` discriminator on runbook. 'runbook'
+        // (the default) is a normal procedure; 'report' is an AI-authored, richly
+        // rendered Markdown document the user reads in the app's read-only report
+        // view. Reusing the runbook table keeps storage/search/export single-sourced
+        // rather than forking a parallel `report` entity.
+        conn.execute_batch(
+            "ALTER TABLE runbook ADD COLUMN kind TEXT NOT NULL DEFAULT 'runbook';",
+        )?;
+        conn.execute_batch("PRAGMA user_version = 8;")?;
+    }
     Ok(())
 }
 
@@ -288,6 +299,9 @@ pub struct Runbook {
     pub title: String,
     pub description: String,
     pub tags: Vec<String>,
+    /// Discriminator: "runbook" (default) or "report" — an AI-authored Markdown
+    /// document rendered read-only (docs D17). Populated in list and detail views.
+    pub kind: String,
     /// Optional absolute path this runbook is pinned to (docs D15). Used as the
     /// working directory for executed commands; "" when unpinned. Empty in list
     /// views; populated by `get_runbook`.
@@ -383,7 +397,8 @@ fn set_tags(conn: &Connection, runbook_id: i64, tags: &[String]) -> rusqlite::Re
 // ----------------------------------------------------------------------------
 
 /// A runbook header row before tags/steps are hydrated.
-type RunbookRow = (i64, String, String, String, String);
+/// Columns: id, title, description, created_at, updated_at, kind.
+type RunbookRow = (i64, String, String, String, String, String);
 
 /// List runbooks (without steps). With no `query`, returns all newest-first.
 /// With a query, uses ranked FTS5 search over step title/body when available
@@ -405,12 +420,13 @@ pub fn list_runbooks(conn: &Connection, query: Option<&str>) -> rusqlite::Result
     };
 
     let mut out = Vec::with_capacity(rows.len());
-    for (id, title, description, created_at, updated_at) in rows {
+    for (id, title, description, created_at, updated_at, kind) in rows {
         out.push(Runbook {
             id,
             title,
             description,
             tags: tags_for(conn, id)?,
+            kind,
             // Pinned dir is only needed in the detail view; left empty in lists
             // (like `steps`) to keep the list/FTS queries untouched.
             project_dir: String::new(),
@@ -423,12 +439,12 @@ pub fn list_runbooks(conn: &Connection, query: Option<&str>) -> rusqlite::Result
 }
 
 fn row_to_header(r: &Row) -> rusqlite::Result<RunbookRow> {
-    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
 }
 
 fn fetch_all(conn: &Connection) -> rusqlite::Result<Vec<RunbookRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, description, created_at, updated_at
+        "SELECT id, title, description, created_at, updated_at, kind
          FROM runbook ORDER BY updated_at DESC, id DESC",
     )?;
     let rows = stmt
@@ -441,7 +457,7 @@ fn fetch_all(conn: &Connection) -> rusqlite::Result<Vec<RunbookRow>> {
 /// title/body, newest-first.
 fn fetch_like(conn: &Connection, like: &str) -> rusqlite::Result<Vec<RunbookRow>> {
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT r.id, r.title, r.description, r.created_at, r.updated_at
+        "SELECT DISTINCT r.id, r.title, r.description, r.created_at, r.updated_at, r.kind
          FROM runbook r
          LEFT JOIN runbook_tag rt ON rt.runbook_id = r.id
          LEFT JOIN tag t ON t.id = rt.tag_id
@@ -480,7 +496,7 @@ fn fetch_fts(conn: &Connection, match_expr: &str, like: &str) -> rusqlite::Resul
              FROM matches m JOIN step s ON s.id = m.sid
              GROUP BY s.runbook_id
          )
-         SELECT r.id, r.title, r.description, r.created_at, r.updated_at
+         SELECT r.id, r.title, r.description, r.created_at, r.updated_at, r.kind
          FROM runbook r
          LEFT JOIN step_hits sh ON sh.rid = r.id
          WHERE sh.rid IS NOT NULL
@@ -505,7 +521,7 @@ fn fetch_fts(conn: &Connection, match_expr: &str, like: &str) -> rusqlite::Resul
 pub fn get_runbook(conn: &Connection, id: i64) -> rusqlite::Result<Option<Runbook>> {
     let base = conn
         .query_row(
-            "SELECT title, description, created_at, updated_at, project_dir
+            "SELECT title, description, created_at, updated_at, project_dir, kind
              FROM runbook WHERE id = ?1",
             [id],
             |r| {
@@ -515,12 +531,13 @@ pub fn get_runbook(conn: &Connection, id: i64) -> rusqlite::Result<Option<Runboo
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
                     r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
                 ))
             },
         )
         .optional()?;
 
-    let Some((title, description, created_at, updated_at, project_dir)) = base else {
+    let Some((title, description, created_at, updated_at, project_dir, kind)) = base else {
         return Ok(None);
     };
 
@@ -540,6 +557,7 @@ pub fn get_runbook(conn: &Connection, id: i64) -> rusqlite::Result<Option<Runboo
         title,
         description,
         tags: tags_for(conn, id)?,
+        kind,
         project_dir,
         steps,
         created_at,
@@ -561,6 +579,41 @@ pub fn create_runbook(
     if let Some(tags) = tags {
         set_tags(conn, id, tags)?;
     }
+    Ok(id)
+}
+
+/// Create an AI **report** (docs D17): a `kind='report'` runbook whose single step
+/// body holds the whole Markdown document. Reuses runbook storage so the report is
+/// listable, searchable, and Markdown-exportable like any other runbook, but the
+/// app renders it in a read-only report view rather than the step/replay UI.
+///
+/// `allow(dead_code)`: called by the `runebook-mcp` crate (which `#[path]`-includes
+/// this file), not by the Tauri app — the app only ever *reads* reports, since they
+/// are authored over MCP. Keeping the SQL here keeps it single-sourced.
+#[allow(dead_code)]
+pub fn create_report(
+    conn: &Connection,
+    title: &str,
+    body: &str,
+    tags: Option<&[String]>,
+    description: Option<&str>,
+) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO runbook(title, description, kind) VALUES (?1, ?2, 'report')",
+        params![title, description.unwrap_or("")],
+    )?;
+    let id = conn.last_insert_rowid();
+    if let Some(tags) = tags {
+        set_tags(conn, id, tags)?;
+    }
+    add_step(
+        conn,
+        id,
+        StepInput {
+            title: String::new(),
+            body: body.to_string(),
+        },
+    )?;
     Ok(id)
 }
 
@@ -1177,5 +1230,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(get_runbook(&conn, rb).unwrap().unwrap().project_dir, "");
+    }
+
+    #[test]
+    fn reports_have_report_kind_and_one_step() {
+        let conn = mem();
+        // A normal runbook defaults to kind 'runbook'.
+        let rb = create_runbook(&conn, "Deploy", None, None).unwrap();
+        assert_eq!(get_runbook(&conn, rb).unwrap().unwrap().kind, "runbook");
+
+        // A report is kind 'report' with its Markdown captured as a single step.
+        let rep = create_report(
+            &conn,
+            "Project Overview",
+            "# Intro\n\n> [!NOTE]\n> read me\n\n```sh\nls\n```",
+            Some(&["docs".to_string()]),
+            Some("a tour"),
+        )
+        .unwrap();
+        let got = get_runbook(&conn, rep).unwrap().unwrap();
+        assert_eq!(got.kind, "report");
+        assert_eq!(got.description, "a tour");
+        assert_eq!(got.tags, vec!["docs".to_string()]);
+        assert_eq!(got.steps.len(), 1);
+        assert!(got.steps[0].body.contains("# Intro"));
+
+        // kind also comes back in list views (so cards can badge reports).
+        let listed = list_runbooks(&conn, None).unwrap();
+        assert_eq!(listed.iter().find(|r| r.id == rep).unwrap().kind, "report");
+        assert_eq!(listed.iter().find(|r| r.id == rb).unwrap().kind, "runbook");
+
+        // Reports are full-text searchable like any runbook.
+        assert!(list_runbooks(&conn, Some("Intro")).unwrap().iter().any(|r| r.id == rep));
     }
 }
