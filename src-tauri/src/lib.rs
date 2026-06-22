@@ -128,6 +128,75 @@ fn copy_to_clipboard(app: tauri::AppHandle, text: String) -> Result<(), String> 
     app.clipboard().write_text(text).map_err(|e| e.to_string())
 }
 
+/// Whether `s` is an absolute path or carries a URI scheme (`https:`, `mailto:`,
+/// `file:`, …) — i.e. already resolvable on its own, so it should NOT be joined to
+/// a base directory. A bare relative link like `README.md` returns false.
+fn is_absolute_or_url(s: &str) -> bool {
+    if std::path::Path::new(s).is_absolute() {
+        return true;
+    }
+    // scheme = the chars before the first ':'; valid schemes are alpha-led and
+    // made of [A-Za-z0-9+.-] (RFC 3986). Guards against treating a relative path
+    // that merely contains a colon (rare) as a URL.
+    match s.find(':') {
+        Some(i) if i > 0 => {
+            let scheme = &s[..i];
+            scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+        }
+        _ => false,
+    }
+}
+
+/// Open a URL or local path in the user's default application (browser, file
+/// viewer, editor) via the desktop's `xdg-open`.
+///
+/// Links inside rendered runbook markdown would otherwise navigate the overlay's
+/// **WebView itself** to the target — unloading the whole Svelte app into a
+/// frameless, transparent, always-on-top window with no titlebar, no back button,
+/// and (because the SPA is gone) no working Esc. That's a dead end the user can
+/// only escape by killing the app. The frontend cancels that navigation and routes
+/// the link here instead, so it opens *outside* the overlay.
+///
+/// `base` is the runbook's pinned folder (D15), if any: a **relative** link (a
+/// note's `[README](README.md)`) is resolved against it so it points at a real
+/// file. Absolute paths and scheme URLs (`https:`/`mailto:`/`file:`) open as-is and
+/// ignore `base`. The frontend only sends a relative link once it has a base, so
+/// `xdg-open` never sees an unrooted, unresolvable path.
+///
+/// `xdg-open` receives the value as a single argv element (no shell), so there's
+/// no command injection; the link is the user's own note content (same trust model
+/// as the Run buttons, D11). `(async)` keeps the body off the main thread so a slow
+/// opener can't jank the overlay; `.status()` reaps the child (no zombie).
+#[tauri::command(async)]
+fn open_external(url: String, base: Option<String>) -> Result<(), String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("empty link".into());
+    }
+    let target = if is_absolute_or_url(url) {
+        url.to_string()
+    } else if let Some(base) = base.as_deref().filter(|b| !b.is_empty()) {
+        std::path::Path::new(base).join(url).to_string_lossy().into_owned()
+    } else {
+        // No base to resolve a relative link against. The frontend guards this, so
+        // reaching here is unexpected; surface it rather than open the wrong file.
+        return Err(format!("could not open relative link without a folder: {url}"));
+    };
+    let status = std::process::Command::new("xdg-open")
+        .arg(&target)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("could not open link (is xdg-open installed?): {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("could not open link: {target}"))
+    }
+}
+
 /// Render a runbook to portable Markdown (Phase 5 export).
 #[tauri::command]
 fn export_markdown(db: State<'_, Db>, runbook_id: i64) -> Result<Option<String>, String> {
@@ -562,6 +631,7 @@ pub fn run() {
             get_setting,
             set_setting,
             copy_to_clipboard,
+            open_external,
             export_markdown,
             save_text_file,
             get_hotkey,
@@ -659,7 +729,25 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{cap_output, is_export_filename, slugify};
+    use super::{cap_output, is_absolute_or_url, is_export_filename, slugify};
+
+    #[test]
+    fn absolute_or_url_classification() {
+        // Open-as-is: absolute paths and scheme URLs.
+        assert!(is_absolute_or_url("/home/me/README.md"));
+        assert!(is_absolute_or_url("https://example.com/x"));
+        assert!(is_absolute_or_url("http://localhost:1420/"));
+        assert!(is_absolute_or_url("mailto:a@b.com"));
+        assert!(is_absolute_or_url("file:///etc/hosts"));
+        assert!(is_absolute_or_url("vscode://file/x")); // any valid scheme
+        // Resolve-against-base: bare relative links (no scheme, not absolute).
+        assert!(!is_absolute_or_url("README.md"));
+        assert!(!is_absolute_or_url("./docs/x.md"));
+        assert!(!is_absolute_or_url("../sibling/y.md"));
+        assert!(!is_absolute_or_url("docs/guide.md"));
+        // A leading ':' has no scheme, so it stays relative (joined to the base).
+        assert!(!is_absolute_or_url(":weird.md"));
+    }
 
     #[test]
     fn export_filename_matches_only_our_exports() {

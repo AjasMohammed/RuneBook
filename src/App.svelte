@@ -828,7 +828,16 @@
       // Strip the [!TYPE] marker from the first text node only (no re-injection).
       const tw = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
       const first = tw.nextNode();
-      if (first) first.nodeValue = first.nodeValue.replace(CALLOUT_RE, "");
+      if (first) {
+        first.nodeValue = first.nodeValue.replace(CALLOUT_RE, "");
+        // With marked `breaks: true`, the newline after `[!NOTE]` became a <br>;
+        // once the marker is gone that <br> would start the body with a blank
+        // line, so drop the now-empty lead text node and its trailing <br>.
+        if (!first.nodeValue.trim() && first.nextSibling?.nodeName === "BR") {
+          first.nextSibling.remove();
+          first.remove();
+        }
+      }
       const label = document.createElement("div");
       label.className = "callout-title";
       label.textContent = type[0].toUpperCase() + type.slice(1);
@@ -1066,6 +1075,52 @@
     }
   }
 
+  // Prompt for a folder, pin it to the open runbook (D15), and return the path.
+  // Used when a relative file link is clicked but the runbook has no pinned folder
+  // yet. Pinning (vs. a throwaway pick) means later links and the ▶ Run buttons
+  // reuse the same dir without re-asking; it's reversible via the pin chip's ✕.
+  async function pickAndPinFolder() {
+    if (!selected) return null;
+    const path = await run(() => open({ directory: true, multiple: false }));
+    if (!path) return null; // user cancelled
+    await run(() => invoke("update_runbook", { id: selected.id, patch: { projectDir: path } }));
+    await refreshSelected();
+    return path;
+  }
+
+  // Links inside rendered markdown (a runbook note or an AI report) are real
+  // <a href> elements, and by default a click navigates the overlay's WebView
+  // *itself* to the target — unloading the whole Svelte app into a frameless,
+  // transparent, always-on-top window with no titlebar, no Back, and no working
+  // Esc (the keydown handler is part of the SPA that just got unloaded). That's a
+  // dead end you can only escape by killing the app. So intercept every in-content
+  // link before it can navigate, and open the target *outside* the overlay:
+  //   • #anchors (the report TOC, manual #sections) only scroll — leave them.
+  //   • scheme URLs (http/https/mailto/file/…) and absolute paths → hand to the OS.
+  //   • a relative link (e.g. `README.md`) is resolved against the runbook's
+  //     pinned folder (D15); with none pinned we prompt for one (and pin it), then
+  //     open — so the click does something useful instead of nothing.
+  // Capture phase so this runs before anything else and the default never fires.
+  async function onAnchorClick(e) {
+    const a = e.target?.closest?.("a[href]");
+    if (!a) return;
+    const href = (a.getAttribute("href") || "").trim();
+    if (!href || href.startsWith("#")) return; // in-page scroll — safe, not a navigation
+    e.preventDefault(); // never let a content link unload the overlay (sync, before any await)
+
+    const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(href); // http: mailto: file: …
+    if (hasScheme || href.startsWith("/")) {
+      run(() => invoke("open_external", { url: href, base: null }));
+      return;
+    }
+    // Relative file link: resolve against the pinned folder, prompting for one if
+    // the runbook isn't pinned yet (and bailing quietly if the picker is dismissed).
+    let base = selected?.projectDir || null;
+    if (!base) base = await pickAndPinFolder();
+    if (!base) return;
+    run(() => invoke("open_external", { url: href, base }));
+  }
+
   async function onKeydown(e) {
     // Ctrl/Cmd+K — toggle the quick switcher from any mode (D14).
     if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
@@ -1111,7 +1166,7 @@
   onDestroy(() => unlistenShow?.());
 </script>
 
-<svelte:window on:keydown={onKeydown} on:click={onDocClick} />
+<svelte:window on:keydown={onKeydown} on:click={onDocClick} on:click|capture={onAnchorClick} />
 
 <main class="overlay">
   <header class="bar" data-tauri-drag-region>

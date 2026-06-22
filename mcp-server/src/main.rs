@@ -507,6 +507,12 @@ fn dispatch(conn: &Connection, name: &str, args: &Value) -> Result<String, Strin
         "create_report" => {
             let title = require_str(args, "title")?;
             let body = require_str(args, "body")?;
+            // A report with no body is an empty document — reject it up front
+            // (mirrors add_step refusing a fully-empty step), rather than create
+            // a blank report that renders as "no content".
+            if body.trim().is_empty() {
+                return Err("A report needs a non-empty markdown body.".to_string());
+            }
             let description = args.get("description").and_then(Value::as_str);
             let tags = parse_tags(args);
             let id = db::create_report(conn, title, body, tags.as_deref(), description)
@@ -725,8 +731,12 @@ mod tests {
     fn create_report_round_trip() {
         let (conn, path) = temp_db();
 
-        // body is required (title alone is not enough for a report).
+        // body is required (title alone is not enough for a report), and an
+        // all-whitespace body is rejected rather than creating an empty report.
         assert!(call(&conn, "create_report", json!({ "title": "Overview" })).is_err());
+        assert!(call(&conn, "create_report", json!({ "title": "Overview", "body": "   " }))
+            .unwrap_err()
+            .contains("non-empty"));
 
         let created = call(
             &conn,

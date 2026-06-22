@@ -954,6 +954,22 @@ pub fn export_markdown(conn: &Connection, id: i64) -> rusqlite::Result<Option<St
     if !rb.description.trim().is_empty() {
         out.push_str(&format!("\n{}\n", rb.description.trim()));
     }
+    // A report (D17) is a single Markdown document — emit its body directly,
+    // without the per-step "## N. Step" scaffolding a procedure gets (its step
+    // bodies already carry their own headings).
+    if rb.kind == "report" {
+        let body = rb
+            .steps
+            .iter()
+            .map(|s| s.body.trim_end())
+            .filter(|b| !b.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !body.is_empty() {
+            out.push_str(&format!("\n{body}\n"));
+        }
+        return Ok(Some(out));
+    }
     for (i, s) in rb.steps.iter().enumerate() {
         let n = i + 1;
         let heading = if s.title.trim().is_empty() {
@@ -1262,5 +1278,13 @@ mod tests {
 
         // Reports are full-text searchable like any runbook.
         assert!(list_runbooks(&conn, Some("Intro")).unwrap().iter().any(|r| r.id == rep));
+
+        // Report export is the raw document (title + body), NOT wrapped in the
+        // per-step "## N. Step" scaffolding a procedure gets.
+        let md = export_markdown(&conn, rep).unwrap().unwrap();
+        assert!(md.starts_with("# Project Overview\n"));
+        assert!(md.contains("# Intro"));
+        assert!(md.contains("```sh\nls\n```"));
+        assert!(!md.contains("## 1."), "report export must not add step headings");
     }
 }

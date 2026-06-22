@@ -215,7 +215,12 @@ Runebook, instead of generating a throwaway standalone HTML file. Decisions:
   runbook shows a dedicated reading layout (badge, title, TOC, rendered body, Copy/
   Save `.md`) instead of the step/replay/variable chrome. Code blocks keep their
   one-click **copy** button but **not** the ▶ run button (D11): an AI-authored
-  document is to be read and copied from, not executed wholesale.
+  document is to be read and copied from, not executed wholesale. **Copy/Save `.md`
+  exports the report's raw Markdown (title + body), not the per-step `## N. Step`
+  scaffolding a procedure export gets** (`export_markdown` special-cases
+  `kind='report'`). Links in any rendered markdown open in the **system browser**
+  via the `open_external` command — an in-content link would otherwise navigate the
+  overlay's WebView off the app, a dead end with no titlebar/back/Esc.
 - **Surfacing.** The MCP server and the overlay are separate processes (D13) with no
   IPC channel, so a freshly written report can't be pushed to the overlay live; it
   appears the next time the Browse list loads (re-query on summon). A live DB-watch /
