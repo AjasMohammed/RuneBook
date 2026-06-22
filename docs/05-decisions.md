@@ -220,11 +220,16 @@ Runebook, instead of generating a throwaway standalone HTML file. Decisions:
   IPC channel, so a freshly written report can't be pushed to the overlay live; it
   appears the next time the Browse list loads (re-query on summon). A live DB-watch /
   tray notification is a deliberate future, out of scope for the first slice.
-- **Not implemented in the first slice (deferred):** Mermaid diagram rendering (the
-  biggest extra visual win, but a heavy JS dependency — load it via dynamic import
-  later so the base bundle stays light per D1); an "AI HTML in a sandboxed iframe"
-  escape hatch for fully free-form output (rejected as the default: large security
-  surface, ignores the design tokens, and breaks the IPC-routed copy buttons).
+- **Mermaid diagrams** (the biggest extra visual win) render in reports: a
+  ` ```mermaid ` fenced block becomes an SVG. Mermaid is heavy, so it is pulled in
+  via **dynamic `import()`** only when a report actually contains a diagram — Vite
+  splits it into its own chunk (`mermaid.core-*.js`), so the base bundle stays light
+  (D1). It renders with `securityLevel: "strict"` (mermaid escapes label HTML in its
+  own output); an invalid diagram or a missing module falls back to showing the
+  diagram source rather than failing silently.
+- **Still deferred:** an "AI HTML in a sandboxed iframe" escape hatch for fully
+  free-form output — rejected as the default (large security surface, ignores the
+  design tokens, breaks the IPC-routed copy buttons).
 
 This narrows open question **Q4** for AI-authored content: reports render sanitized,
 and code blocks in them are copy-only (never auto-run).

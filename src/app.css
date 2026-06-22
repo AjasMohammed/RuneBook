@@ -1470,3 +1470,24 @@ button:disabled:hover {
 .report-body .callout-caution .callout-title {
   color: var(--err);
 }
+
+/* Mermaid diagrams in reports (D17) — lazily rendered to SVG. */
+.report-body .mermaid-diagram {
+  margin: 12px 0;
+  padding: 10px;
+  display: flex;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.report-body .mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.report-body .mermaid-fallback {
+  margin: 12px 0;
+}

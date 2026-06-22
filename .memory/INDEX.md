@@ -46,6 +46,7 @@ See [CLAUDE.md](../CLAUDE.md) → "Memory" for the node/edge schema and conventi
 - [[markdown-render-key-guard]] — the `markdown` action re-rendered (and wiped run-output) on every var keystroke; now skips render unless the visible output changes
 - [[ui-theming-tokens]] — 2026-06: bundled Hanken/Space Grotesk via @fontsource; accent tints are JS-set `--accent-soft`/`--accent-line` so they follow the runtime accent; `--ok`/`--err` are semantic, not the accent
 - [[ai-reports]] — Phase 9/D17: an MCP AI writes a `kind='report'` runbook (migration v8); read-only reading view renders it richly (DOMPurify-sanitized markdown + callouts + TOC, copy-only code blocks) instead of a standalone HTML file
+- [[browse-list-refresh]] — externally-written runbooks (MCP) didn't show in Browse until reload; `setMode("browse")` now re-queries (fixed 2026-06-22)
 
 ### Environment & Build
 - [[x11-target]] — X11 confirmed; transparency + global shortcuts work, no Wayland hacks

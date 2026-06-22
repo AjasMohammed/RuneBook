@@ -34,6 +34,10 @@
     error = "";
     clearFlash();
     mode = m;
+    // Re-query on entering Browse so externally-written runbooks (e.g. via the
+    // MCP server) appear without a restart — the list is otherwise only loaded
+    // on mount and after the app's own edits.
+    if (m === "browse") loadRunbooks(search);
   }
 
   // Settings state.
@@ -810,6 +814,10 @@
   // blockquotes into styled callouts and, for longer reports, prepends a clickable
   // table of contents built from the headings.
   function decorateReport(node) {
+    // ```mermaid blocks → SVG diagrams (lazy-loaded). Runs first so the copy/run
+    // wiring (which re-queries <pre> after this) never touches a diagram block.
+    renderMermaid(node);
+
     node.querySelectorAll("blockquote").forEach((bq) => {
       const p = bq.querySelector("p");
       if (!p) return;
@@ -850,6 +858,58 @@
       nav.appendChild(ul);
       node.prepend(nav);
     }
+  }
+
+  // Lazily-loaded Mermaid diagram rendering for reports (D17). A ```mermaid fenced
+  // block becomes an SVG diagram. Mermaid is a heavy dependency, so it's pulled in
+  // via dynamic import() only when a report actually contains a diagram — Vite
+  // splits it into its own chunk, keeping the base bundle light (D1).
+  let mermaidSeq = 0;
+
+  function renderMermaid(node) {
+    const blocks = [...node.querySelectorAll("pre > code.language-mermaid")];
+    if (!blocks.length) return;
+    // Swap each fenced block for a placeholder synchronously, so the copy/run
+    // wiring (which runs next and re-queries <pre>) never wires up a diagram.
+    const targets = blocks.map((code) => {
+      const holder = document.createElement("div");
+      holder.className = "mermaid-diagram";
+      const src = code.textContent;
+      code.closest("pre").replaceWith(holder);
+      return { holder, src };
+    });
+    // Async: load mermaid on demand and render each diagram into its placeholder.
+    (async () => {
+      let mermaid;
+      try {
+        mermaid = (await import("mermaid")).default;
+        mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
+      } catch {
+        targets.forEach(({ holder, src }) => mermaidFallback(holder, src));
+        return;
+      }
+      for (const { holder, src } of targets) {
+        try {
+          // strict securityLevel makes mermaid escape label HTML in its own output.
+          const { svg } = await mermaid.render(`mmd-${mermaidSeq++}`, src);
+          holder.innerHTML = svg;
+        } catch {
+          mermaidFallback(holder, src); // invalid diagram → show its source instead
+        }
+      }
+    })();
+  }
+
+  // When a diagram can't render (mermaid missing or a syntax error), show its
+  // source so nothing is silently lost.
+  function mermaidFallback(holder, src) {
+    holder.className = "mermaid-fallback";
+    holder.textContent = "";
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    code.textContent = src;
+    pre.appendChild(code);
+    holder.appendChild(pre);
   }
 
   function markdown(node, param) {

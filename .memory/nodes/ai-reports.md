@@ -62,8 +62,16 @@ shows a dedicated reading layout (✦ badge, title, TOC, rendered body, Copy/Sav
 instead of the step/replay/variable chrome. Code blocks keep **copy** but get **no
 ▶ run** button: an AI-authored doc is read & copied from, never executed wholesale.
 
-**Deferred (documented in D17):** Mermaid diagrams (heavy JS dep — load via dynamic
-import later, keep the base bundle light per [[tauri-over-electron]]); live push of a
-new report to an open overlay (separate processes — appears on next list load for
-now); a sandboxed-iframe "raw AI HTML" escape hatch (rejected as default: big
-security surface, ignores design tokens, breaks IPC-routed copy buttons).
+**Mermaid diagrams are now implemented** (2026-06-22): ` ```mermaid ` blocks render to
+SVG via `renderMermaid()` in the `rich` path. Mermaid is heavy, so it's loaded with
+**dynamic `import("mermaid")`** only when a report contains a diagram — Vite splits it
+into its own `mermaid.core-*.js` chunk, so the base bundle is unchanged (the lazy
+plan from [[tauri-over-electron]]/D1). `securityLevel: "strict"`; invalid diagram or
+missing module → fall back to the source. The mermaid `<pre>` is swapped for a
+placeholder div *synchronously* before the copy/run wiring re-queries `<pre>`, so a
+diagram never gets a copy/run button.
+
+**Still deferred:** live push of a new report to an open overlay (separate processes;
+[[browse-list-refresh]] re-queries on Browse entry, so it appears on next view); a
+sandboxed-iframe "raw AI HTML" escape hatch (rejected as default: big security
+surface, ignores design tokens, breaks IPC-routed copy buttons).

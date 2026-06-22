@@ -136,9 +136,12 @@ standalone HTML file ([05-decisions.md](05-decisions.md) D17).
   report-only pass for GitHub-style callouts and an auto table of contents. A
   `kind='report'` runbook opens in a read-only reading view (badge, TOC, Copy/Save
   `.md`); code blocks are **copy-only** (no ▶ run).
-- ⨯ **Deferred:** Mermaid diagrams (dynamic-import later, keeps the bundle light);
-  live push of a new report to an open overlay (separate processes — appears on next
-  list load for now); a sandboxed-iframe "raw AI HTML" escape hatch.
+- ✅ **Mermaid diagrams:** ` ```mermaid ` blocks render to SVG, pulled in via dynamic
+  `import()` only when a report has a diagram (Vite splits it into its own chunk, so
+  the base bundle stays light); `securityLevel: "strict"`, with a source fallback.
+- ⨯ **Deferred:** live push of a new report to an open overlay (separate processes —
+  Browse now re-queries on entry, so it appears on next view); a sandboxed-iframe
+  "raw AI HTML" escape hatch.
 - **Done when:** an agent calls `create_report`, and opening it in Browse shows a
   clean, sanitized, on-brand document with a working TOC and copy buttons.
 - Verified via `cargo test` (db `create_report`/`kind`, MCP tool list) +
