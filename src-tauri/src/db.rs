@@ -143,9 +143,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         // Project pinning (docs D15): an optional directory a runbook belongs to,
         // used as the working directory for executed commands. ALTER ADD COLUMN
         // is safe/idempotent enough here because user_version gates re-runs.
-        conn.execute_batch(
-            "ALTER TABLE runbook ADD COLUMN project_dir TEXT NOT NULL DEFAULT '';",
-        )?;
+        conn.execute_batch("ALTER TABLE runbook ADD COLUMN project_dir TEXT NOT NULL DEFAULT '';")?;
         conn.execute_batch("PRAGMA user_version = 7;")?;
     }
     if version < 8 {
@@ -154,9 +152,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         // rendered Markdown document the user reads in the app's read-only report
         // view. Reusing the runbook table keeps storage/search/export single-sourced
         // rather than forking a parallel `report` entity.
-        conn.execute_batch(
-            "ALTER TABLE runbook ADD COLUMN kind TEXT NOT NULL DEFAULT 'runbook';",
-        )?;
+        conn.execute_batch("ALTER TABLE runbook ADD COLUMN kind TEXT NOT NULL DEFAULT 'runbook';")?;
         conn.execute_batch("PRAGMA user_version = 8;")?;
     }
     Ok(())
@@ -375,7 +371,10 @@ fn tags_for(conn: &Connection, runbook_id: i64) -> rusqlite::Result<Vec<String>>
 
 /// Replace a runbook's tag set: upsert each tag name, then rewrite the links.
 fn set_tags(conn: &Connection, runbook_id: i64, tags: &[String]) -> rusqlite::Result<()> {
-    conn.execute("DELETE FROM runbook_tag WHERE runbook_id = ?1", [runbook_id])?;
+    conn.execute(
+        "DELETE FROM runbook_tag WHERE runbook_id = ?1",
+        [runbook_id],
+    )?;
     for raw in tags {
         let name = raw.trim();
         if name.is_empty() {
@@ -439,7 +438,14 @@ pub fn list_runbooks(conn: &Connection, query: Option<&str>) -> rusqlite::Result
 }
 
 fn row_to_header(r: &Row) -> rusqlite::Result<RunbookRow> {
-    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+    ))
 }
 
 fn fetch_all(conn: &Connection) -> rusqlite::Result<Vec<RunbookRow>> {
@@ -701,9 +707,11 @@ pub fn update_step(conn: &Connection, id: i64, patch: StepPatch) -> rusqlite::Re
 /// which also makes this a cheap step-existence check (used by `runebook-mcp` to
 /// reject edits/deletes of a missing step instead of silently no-op'ing).
 pub fn step_owner(conn: &Connection, step_id: i64) -> rusqlite::Result<Option<i64>> {
-    conn.query_row("SELECT runbook_id FROM step WHERE id = ?1", [step_id], |r| {
-        r.get(0)
-    })
+    conn.query_row(
+        "SELECT runbook_id FROM step WHERE id = ?1",
+        [step_id],
+        |r| r.get(0),
+    )
     .optional()
 }
 
@@ -756,8 +764,10 @@ pub fn delete_step(conn: &Connection, id: i64) -> rusqlite::Result<()> {
 // ----------------------------------------------------------------------------
 
 pub fn get_setting(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
-    conn.query_row("SELECT value FROM setting WHERE key = ?1", [key], |r| r.get(0))
-        .optional()
+    conn.query_row("SELECT value FROM setting WHERE key = ?1", [key], |r| {
+        r.get(0)
+    })
+    .optional()
 }
 
 pub fn set_setting(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
@@ -1013,14 +1023,21 @@ mod tests {
         );
 
         let rb = create_runbook(&conn, "Deploy via SSH", None, None).unwrap();
-        add_step(&conn, rb, step("SSH into prod", "```\nssh deploy@host\n```")).unwrap();
+        add_step(
+            &conn,
+            rb,
+            step("SSH into prod", "```\nssh deploy@host\n```"),
+        )
+        .unwrap();
         create_runbook(&conn, "Unrelated", None, None).unwrap();
 
         let hits = list_runbooks(&conn, Some("ssh")).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, rb);
 
-        assert!(list_runbooks(&conn, Some("zzznotpresent")).unwrap().is_empty());
+        assert!(list_runbooks(&conn, Some("zzznotpresent"))
+            .unwrap()
+            .is_empty());
         // Empty query lists everything.
         assert_eq!(list_runbooks(&conn, None).unwrap().len(), 2);
     }
@@ -1062,7 +1079,10 @@ mod tests {
         let by_tag = list_runbooks(&conn, Some("secrets")).unwrap();
         assert_eq!(by_tag.len(), 1);
         assert_eq!(by_tag[0].id, rb);
-        assert_eq!(by_tag[0].tags, vec!["db".to_string(), "secrets".to_string()]);
+        assert_eq!(
+            by_tag[0].tags,
+            vec!["db".to_string(), "secrets".to_string()]
+        );
 
         // Matches by runbook title.
         assert_eq!(list_runbooks(&conn, Some("postgres")).unwrap().len(), 1);
@@ -1149,7 +1169,12 @@ mod tests {
         assert_eq!(list_progress(&conn).unwrap()[0].done, 2);
         reset_progress(&conn, rb).unwrap();
         assert!(list_progress(&conn).unwrap().is_empty());
-        assert!(get_runbook(&conn, rb).unwrap().unwrap().steps.iter().all(|s| !s.done));
+        assert!(get_runbook(&conn, rb)
+            .unwrap()
+            .unwrap()
+            .steps
+            .iter()
+            .all(|s| !s.done));
 
         // Deleting a step cascades its progress row away.
         set_step_done(&conn, s1, true).unwrap();
@@ -1190,7 +1215,10 @@ mod tests {
         assert_eq!(got.get("user"), None); // replaced, not merged
 
         delete_var_profile(&conn, rb, "prod").unwrap();
-        assert_eq!(list_var_profiles(&conn, rb).unwrap(), vec!["staging".to_string()]);
+        assert_eq!(
+            list_var_profiles(&conn, rb).unwrap(),
+            vec!["staging".to_string()]
+        );
 
         // Profiles cascade away with their runbook.
         delete_runbook(&conn, rb).unwrap();
@@ -1200,7 +1228,10 @@ mod tests {
     #[test]
     fn run_gate_defaults_off_and_tracks_setting() {
         let conn = mem();
-        assert!(!run_allowed(&conn).unwrap(), "execution must be off until enabled");
+        assert!(
+            !run_allowed(&conn).unwrap(),
+            "execution must be off until enabled"
+        );
         set_setting(&conn, "allow_run", "0").unwrap();
         assert!(!run_allowed(&conn).unwrap());
         set_setting(&conn, "allow_run", "1").unwrap();
@@ -1277,7 +1308,10 @@ mod tests {
         assert_eq!(listed.iter().find(|r| r.id == rb).unwrap().kind, "runbook");
 
         // Reports are full-text searchable like any runbook.
-        assert!(list_runbooks(&conn, Some("Intro")).unwrap().iter().any(|r| r.id == rep));
+        assert!(list_runbooks(&conn, Some("Intro"))
+            .unwrap()
+            .iter()
+            .any(|r| r.id == rep));
 
         // Report export is the raw document (title + body), NOT wrapped in the
         // per-step "## N. Step" scaffolding a procedure gets.
@@ -1285,6 +1319,9 @@ mod tests {
         assert!(md.starts_with("# Project Overview\n"));
         assert!(md.contains("# Intro"));
         assert!(md.contains("```sh\nls\n```"));
-        assert!(!md.contains("## 1."), "report export must not add step headings");
+        assert!(
+            !md.contains("## 1."),
+            "report export must not add step headings"
+        );
     }
 }

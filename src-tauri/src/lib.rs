@@ -142,7 +142,9 @@ fn is_absolute_or_url(s: &str) -> bool {
         Some(i) if i > 0 => {
             let scheme = &s[..i];
             scheme.starts_with(|c: char| c.is_ascii_alphabetic())
-                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
         }
         _ => false,
     }
@@ -177,11 +179,16 @@ fn open_external(url: String, base: Option<String>) -> Result<(), String> {
     let target = if is_absolute_or_url(url) {
         url.to_string()
     } else if let Some(base) = base.as_deref().filter(|b| !b.is_empty()) {
-        std::path::Path::new(base).join(url).to_string_lossy().into_owned()
+        std::path::Path::new(base)
+            .join(url)
+            .to_string_lossy()
+            .into_owned()
     } else {
         // No base to resolve a relative link against. The frontend guards this, so
         // reaching here is unexpected; surface it rather than open the wrong file.
-        return Err(format!("could not open relative link without a folder: {url}"));
+        return Err(format!(
+            "could not open relative link without a folder: {url}"
+        ));
     };
     let status = std::process::Command::new("xdg-open")
         .arg(&target)
@@ -287,15 +294,13 @@ const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 /// thread instead, keeping the UI live. The DB lock is released (scoped block)
 /// before we spawn. A never-exiting command is killed after `RUN_TIMEOUT`.
 #[tauri::command(async)]
-fn run_command(
-    db: State<'_, Db>,
-    text: String,
-    cwd: Option<String>,
-) -> Result<RunResult, String> {
+fn run_command(db: State<'_, Db>, text: String, cwd: Option<String>) -> Result<RunResult, String> {
     {
         let conn = db.lock().map_err(|e| e.to_string())?;
         if !db::run_allowed(&conn).map_err(|e| e.to_string())? {
-            return Err("Command execution is disabled — enable it in Settings → Execution.".into());
+            return Err(
+                "Command execution is disabled — enable it in Settings → Execution.".into(),
+            );
         }
     }
     use std::io::Read;
@@ -463,7 +468,13 @@ fn is_export_filename(name: &str) -> bool {
 fn slugify(title: &str) -> String {
     let s: String = title
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     let s = s.trim_matches('-').to_string();
     if s.is_empty() {
@@ -532,7 +543,10 @@ fn git_sync(db: State<'_, Db>, dir: String, push: bool) -> Result<String, String
             String::from_utf8_lossy(&commit.stderr)
         );
         if combined.contains("nothing to commit") {
-            format!("Synced {} runbook(s) — no changes since last sync.", exports.len())
+            format!(
+                "Synced {} runbook(s) — no changes since last sync.",
+                exports.len()
+            )
         } else {
             return Err(format!("git commit failed: {}", combined.trim()));
         }
@@ -740,7 +754,7 @@ mod tests {
         assert!(is_absolute_or_url("mailto:a@b.com"));
         assert!(is_absolute_or_url("file:///etc/hosts"));
         assert!(is_absolute_or_url("vscode://file/x")); // any valid scheme
-        // Resolve-against-base: bare relative links (no scheme, not absolute).
+                                                        // Resolve-against-base: bare relative links (no scheme, not absolute).
         assert!(!is_absolute_or_url("README.md"));
         assert!(!is_absolute_or_url("./docs/x.md"));
         assert!(!is_absolute_or_url("../sibling/y.md"));
@@ -767,7 +781,7 @@ mod tests {
         assert_eq!(slugify("Deploy via SSH"), "deploy-via-ssh");
         assert_eq!(slugify("Rotate Postgres creds!"), "rotate-postgres-creds");
         assert_eq!(slugify("   "), "runbook"); // empty → fallback, never ""
-        // No path separators survive, so an export filename can't escape the dir.
+                                               // No path separators survive, so an export filename can't escape the dir.
         assert_eq!(slugify("../etc/passwd"), "etc-passwd");
         assert!(!slugify("a/b\\c").contains('/'));
     }
