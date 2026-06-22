@@ -45,6 +45,7 @@ See [CLAUDE.md](../CLAUDE.md) → "Memory" for the node/edge schema and conventi
 - [[project-pinning]] — Phase 8/D15: pin a runbook to a dir (`project_dir`, v7); used as the Run cwd; no auto-surface-by-cwd
 - [[markdown-render-key-guard]] — the `markdown` action re-rendered (and wiped run-output) on every var keystroke; now skips render unless the visible output changes
 - [[ui-theming-tokens]] — 2026-06: bundled Hanken/Space Grotesk via @fontsource; accent tints are JS-set `--accent-soft`/`--accent-line` so they follow the runtime accent; `--ok`/`--err` are semantic, not the accent
+- [[ai-reports]] — Phase 9/D17: an MCP AI writes a `kind='report'` runbook (migration v8); read-only reading view renders it richly (DOMPurify-sanitized markdown + callouts + TOC, copy-only code blocks) instead of a standalone HTML file
 
 ### Environment & Build
 - [[x11-target]] — X11 confirmed; transparency + global shortcuts work, no Wayland hacks
@@ -54,6 +55,8 @@ See [CLAUDE.md](../CLAUDE.md) → "Memory" for the node/edge schema and conventi
 - [[svelte-dynamic-input-type]] — Svelte 4 rejects dynamic `type` + `bind:value`; set `.type` via a `use:` action
 - [[db-rs-shared-with-mcp]] — `db.rs` is `#[path]`-included by the MCP binary; changing a shared struct can break the MCP build (check both crates)
 - [[pipe-masks-exit-code]] — `cargo … | tail` reports tail's exit code, not cargo's; verify from output text, not exit code
+- [[app-svelte-nul-bytes]] — `src/App.svelte` holds 2 literal NUL bytes (in `keyOf`), so `file` calls it `data` and plain `grep` skips it — use `grep -a` or Read
+- [[local-rustfmt-mismatch]] — this box's rustfmt differs from the project's; repo HEAD already "fails" `cargo fmt --check`, so don't run `fmt --write` — match file style, verify via build/test/clippy
 
 ### Process
 - [[manual-entry-first]] — v1 captures steps manually; auto-capture deferred
@@ -86,3 +89,7 @@ See [CLAUDE.md](../CLAUDE.md) → "Memory" for the node/edge schema and conventi
 - [[command-palette]] —conceptually_related_to→ [[fts5-search]] (EXTRACTED) — deliberately NOT FTS: instant client-side title/tag filter for jumping, FTS stays in Browse
 - [[db-rs-shared-with-mcp]] —references→ [[mcp-server]] (EXTRACTED) — the `#[path]` include is why a `db.rs` struct change can break `runebook-mcp`
 - [[project-pinning]] —caused_by→ [[db-rs-shared-with-mcp]] (EXTRACTED) — adding `RunbookPatch.project_dir` broke the MCP struct literal until fixed
+- [[ai-reports]] —depends_on→ [[mcp-server]] (EXTRACTED) — reports are authored over MCP (`create_report`); the app only ever reads them
+- [[ai-reports]] —depends_on→ [[markdown-step-model]] (EXTRACTED) — a report *is* a runbook whose single markdown step body is the whole document; no new entity
+- [[ai-reports]] —part_of→ [[copy-per-code-block]] (EXTRACTED) — reuses the same `marked` + per-code-block-copy render path, now DOMPurify-sanitized for AI-authored content
+- [[app-svelte-nul-bytes]] —caused_by→ [[ai-reports]] (EXTRACTED) — discovered while grepping App.svelte to wire the report renderer

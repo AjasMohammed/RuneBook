@@ -5,6 +5,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { save, open } from "@tauri-apps/plugin-dialog";
   import { marked } from "marked";
+  import DOMPurify from "dompurify";
   import MarkdownEditor from "./MarkdownEditor.svelte";
 
   const appWindow = getCurrentWindow();
@@ -138,6 +139,13 @@
   // All distinct tags (for the sidebar filter) and the tag-filtered list.
   $: allTags = [...new Set(runbooks.flatMap((r) => r.tags))].sort();
   $: displayRunbooks = activeTag ? runbooks.filter((r) => r.tags.includes(activeTag)) : runbooks;
+
+  // ── AI reports (D17) ─────────────────────────────────────────────
+  // A report is a kind='report' runbook whose step bodies are one Markdown
+  // document. Opening one shows a read-only reading view instead of the
+  // step/replay UI; the body renders richly (callouts + TOC) and sanitized.
+  $: isReport = selected?.kind === "report";
+  $: reportBody = selected ? selected.steps.map((s) => s.body).filter(Boolean).join("\n\n") : "";
 
   // ── Variables / placeholders ─────────────────────────────────────
   // Steps can contain {{name}} placeholders (e.g. `ssh deploy@{{host}}`). The
@@ -781,6 +789,69 @@
   // Render markdown into the node (with {{vars}} filled) and wire a copy button
   // — and, when execution is enabled, a Run button — onto every code block.
   // Re-runs when the body, variable values, or the run gate change.
+  // Sanitize parsed-markdown HTML before it ever reaches innerHTML. Step bodies —
+  // and especially AI-authored *reports* (D17) — can come from the MCP server, so
+  // the rendered HTML is untrusted: DOMPurify strips <script>, inline event
+  // handlers, and other injection vectors while keeping ordinary markdown output.
+  // <details>/<summary> are allowed so reports can use collapsible sections.
+  function clean(html) {
+    return DOMPurify.sanitize(html, { ADD_TAGS: ["details", "summary"], ADD_ATTR: ["open"] });
+  }
+
+  // GitHub-style callout marker at the start of a blockquote: > [!NOTE] etc.
+  const CALLOUT_RE = /^\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i;
+
+  function headingSlug(text) {
+    return (text || "").toLowerCase().replace(/[^\w]+/g, "-").replace(/^-+|-+$/g, "") || "section";
+  }
+
+  // Report-only enrichment (D17). Runs on already-sanitized DOM and only ever adds
+  // trusted nodes (never re-parses an untrusted string): it turns `> [!NOTE]`
+  // blockquotes into styled callouts and, for longer reports, prepends a clickable
+  // table of contents built from the headings.
+  function decorateReport(node) {
+    node.querySelectorAll("blockquote").forEach((bq) => {
+      const p = bq.querySelector("p");
+      if (!p) return;
+      const m = CALLOUT_RE.exec(p.textContent || "");
+      if (!m) return;
+      const type = m[1].toLowerCase();
+      bq.classList.add("callout", `callout-${type}`);
+      // Strip the [!TYPE] marker from the first text node only (no re-injection).
+      const tw = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+      const first = tw.nextNode();
+      if (first) first.nodeValue = first.nodeValue.replace(CALLOUT_RE, "");
+      const label = document.createElement("div");
+      label.className = "callout-title";
+      label.textContent = type[0].toUpperCase() + type.slice(1);
+      bq.prepend(label);
+    });
+
+    const heads = [...node.querySelectorAll("h1, h2, h3")];
+    if (heads.length >= 3) {
+      const nav = document.createElement("nav");
+      nav.className = "report-toc";
+      const ul = document.createElement("ul");
+      heads.forEach((h, i) => {
+        const id = `h${i}-${headingSlug(h.textContent)}`;
+        h.id = id;
+        const li = document.createElement("li");
+        li.className = `lvl-${h.tagName.toLowerCase()}`;
+        const a = document.createElement("a");
+        a.href = `#${id}`;
+        a.textContent = h.textContent;
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          h.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+        li.appendChild(a);
+        ul.appendChild(li);
+      });
+      nav.appendChild(ul);
+      node.prepend(nav);
+    }
+  }
+
   function markdown(node, param) {
     let current = param;
     let lastKey = null;
@@ -798,7 +869,10 @@
     function render() {
       const { body, vars } = current;
       lastKey = keyOf(current);
-      node.innerHTML = marked.parse(fillVars(body ?? "", vars));
+      node.innerHTML = clean(marked.parse(fillVars(body ?? "", vars)));
+      // Reports (rich) get GitHub-style callouts + an auto table of contents
+      // layered on top of the sanitized markdown.
+      if (current.rich) decorateReport(node);
       // Raw (unfilled) source of each code block, aligned by document order with
       // the rendered <pre>s — so the Run path can substitute shell-escaped values.
       const raw = rawCodeBlocks(body);
@@ -1140,6 +1214,7 @@
               <li class:active={selected?.id === r.id}>
                 <button class="rb" aria-current={selected?.id === r.id ? "true" : undefined} on:click={() => openRunbook(r.id)}>
                   <span class="rb-title">{r.title}</span>
+                  {#if r.kind === "report"}<span class="rb-kind" title="AI report">✦</span>{/if}
                   {#if progressMap[r.id]}
                     <span
                       class="rb-progress"
@@ -1161,6 +1236,52 @@
       <section class="detail">
         {#if !selected}
           <p class="muted">Select a runbook to replay it.</p>
+        {:else if isReport}
+          <!-- ── AI report reading view (D17) ─────────────────────────── -->
+          <div class="report">
+            <div class="report-top">
+              <span class="report-badge" title="An AI-generated report">✦ Report</span>
+              <span class="export-actions">
+                <button class="ghost sm" on:click={copyMarkdown}>Copy .md</button>
+                <button class="ghost sm" on:click={saveMarkdown}>Save .md</button>
+                <button class="del" title="Delete report" aria-label="Delete report" on:click={() => deleteRunbook(selected.id)}>✕</button>
+              </span>
+              <span class="flash" class:show={flash && flashScope === "browse"} role="status">{flashScope === "browse" ? flash : ""}</span>
+            </div>
+
+            {#if editingTitle}
+              <form class="title-edit" on:submit|preventDefault={commitTitle}>
+                <input
+                  bind:this={titleInput}
+                  bind:value={titleBuffer}
+                  aria-label="Report title"
+                  on:blur={commitTitle}
+                  on:keydown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      cancelTitle();
+                    }
+                  }}
+                />
+              </form>
+            {:else}
+              <h1 class="report-title">
+                <button class="title-btn" title="Rename report" aria-label="Rename report" on:click={startEditTitle}>{selected.title}</button>
+                <button class="icon rename" title="Rename report" aria-label="Rename report" on:click={startEditTitle}>✎</button>
+              </h1>
+            {/if}
+
+            {#each selected.tags as t}<span class="tag">#{t}</span>{/each}
+
+            {#if reportBody.trim()}
+              <!-- Copy-only (allowRun: false) — an AI-authored doc is read & copied
+                   from, never run wholesale (D17). rich → callouts + TOC. -->
+              <div class="rendered report-body" use:markdown={{ body: reportBody, vars: {}, allowRun: false, rich: true }}></div>
+            {:else}
+              <p class="muted">This report has no content yet.</p>
+            {/if}
+          </div>
         {:else}
           {#if editingTitle}
             <form class="title-edit" on:submit|preventDefault={commitTitle}>

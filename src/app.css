@@ -1258,3 +1258,215 @@ button:disabled {
 button:disabled:hover {
   background: rgba(255, 255, 255, 0.08);
 }
+
+/* ── AI reports (D17) ──────────────────────────────────────────────────────
+   A kind='report' runbook opens in a read-only reading view. The body reuses
+   `.rendered` (markdown + per-code-block copy) and adds callouts + a TOC. */
+
+/* Report marker on a list card. */
+.rb-kind {
+  margin-left: 5px;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.report {
+  max-width: 700px;
+}
+
+.report-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.report-badge {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.report-top .export-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+.report-title {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 600;
+  margin: 4px 0 8px;
+}
+
+.report-title .title-btn {
+  font: inherit;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: text;
+  text-align: left;
+}
+
+.report-title .title-btn:hover {
+  color: var(--accent);
+}
+
+/* Reading-mode body: a touch larger/airier than a step preview. */
+.report-body {
+  font-size: 13.5px;
+  line-height: 1.62;
+}
+
+.report-body h1 {
+  font-size: 17px;
+}
+
+.report-body h2 {
+  font-size: 15px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 3px;
+}
+
+.report-body h3 {
+  font-size: 13.5px;
+}
+
+.report-body table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12.5px;
+}
+
+.report-body th,
+.report-body td {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 4px 9px;
+  text-align: left;
+}
+
+.report-body th {
+  background: rgba(255, 255, 255, 0.04);
+  font-family: var(--font-display);
+}
+
+.report-body img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+.report-body details {
+  margin: 7px 0;
+  padding: 7px 11px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+}
+
+.report-body summary {
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  color: var(--fg);
+}
+
+/* Table of contents — auto-built from the report's headings. */
+.report-toc {
+  margin: 0 0 14px;
+  padding: 9px 13px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+}
+
+.report-toc ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.report-toc li {
+  margin: 1px 0;
+}
+
+.report-toc li.lvl-h3 {
+  padding-left: 13px;
+}
+
+.report-toc a {
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.report-toc a:hover {
+  color: var(--accent);
+}
+
+/* GitHub-style callouts: a blockquote starting with [!NOTE]/[!TIP]/[!IMPORTANT]/
+   [!WARNING]/[!CAUTION]. Colored to match the semantic tokens, not the accent. */
+.report-body .callout {
+  margin: 10px 0;
+  padding: 8px 13px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--fg);
+}
+
+.report-body .callout .callout-title {
+  font-family: var(--font-display);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 3px;
+}
+
+.report-body .callout p {
+  margin: 3px 0;
+}
+
+.report-body .callout-note {
+  border-left-color: #4aa3df;
+}
+.report-body .callout-note .callout-title {
+  color: #4aa3df;
+}
+
+.report-body .callout-tip {
+  border-left-color: var(--ok);
+}
+.report-body .callout-tip .callout-title {
+  color: var(--ok);
+}
+
+.report-body .callout-important {
+  border-left-color: var(--accent);
+}
+.report-body .callout-important .callout-title {
+  color: var(--accent);
+}
+
+.report-body .callout-warning {
+  border-left-color: #e0a106;
+}
+.report-body .callout-warning .callout-title {
+  color: #e0a106;
+}
+
+.report-body .callout-caution {
+  border-left-color: var(--err);
+}
+.report-body .callout-caution .callout-title {
+  color: var(--err);
+}
