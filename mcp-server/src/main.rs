@@ -140,7 +140,9 @@ fn default_db_path() -> PathBuf {
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default();
             home.join(".local").join("share")
         });
     base.join(APP_IDENTIFIER).join("runebook.db")
@@ -211,7 +213,11 @@ fn handle_message(conn: &Connection, read_only: bool, msg: &Value) -> Option<Val
             if is_notification {
                 None
             } else {
-                Some(error_resp(id, -32601, &format!("Method not found: {method}")))
+                Some(error_resp(
+                    id,
+                    -32601,
+                    &format!("Method not found: {method}"),
+                ))
             }
         }
     }
@@ -425,7 +431,10 @@ fn tool_definitions(read_only: bool) -> Value {
 /// in-band with `isError: true` (per MCP) so the model sees what went wrong.
 fn call_tool(conn: &Connection, read_only: bool, params: &Value) -> Value {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-    let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     // Defense in depth: even though read-only mode hides mutating tools from
     // tools/list, refuse them here too in case a client calls one anyway.
     if read_only && MUTATING_TOOLS.contains(&name) {
@@ -601,7 +610,10 @@ fn ensure_step(conn: &Connection, id: i64) -> Result<(), String> {
 
 fn require_i64(args: &Value, key: &str) -> Result<i64, String> {
     args.get(key)
-        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
         .ok_or_else(|| format!("Missing or invalid required integer argument: '{key}'."))
 }
 
@@ -671,7 +683,10 @@ mod tests {
         let (conn, path) = temp_db();
         for &m in MUTATING_TOOLS {
             let err = call(&conn, m, json!({})).unwrap_err();
-            assert!(!err.starts_with("Unknown tool"), "'{m}' missing from dispatch");
+            assert!(
+                !err.starts_with("Unknown tool"),
+                "'{m}' missing from dispatch"
+            );
         }
         cleanup(&path);
     }
@@ -699,22 +714,35 @@ mod tests {
             .contains("Deploy"));
 
         // add_step: title-only ok; fully-empty rejected; missing runbook rejected.
-        assert!(call(&conn, "add_step", json!({ "runbook_id": rid, "title": "t" })).is_ok());
+        assert!(call(
+            &conn,
+            "add_step",
+            json!({ "runbook_id": rid, "title": "t" })
+        )
+        .is_ok());
         assert!(call(&conn, "add_step", json!({ "runbook_id": rid })).is_err());
-        assert!(call(&conn, "add_step", json!({ "runbook_id": 9999, "body": "x" }))
-            .unwrap_err()
-            .contains("No runbook with id 9999"));
+        assert!(call(
+            &conn,
+            "add_step",
+            json!({ "runbook_id": 9999, "body": "x" })
+        )
+        .unwrap_err()
+        .contains("No runbook with id 9999"));
 
         // update/delete of a missing id must error, not silently succeed.
-        assert!(call(&conn, "update_runbook", json!({ "id": 9999, "title": "x" }))
-            .unwrap_err()
-            .contains("No runbook"));
+        assert!(
+            call(&conn, "update_runbook", json!({ "id": 9999, "title": "x" }))
+                .unwrap_err()
+                .contains("No runbook")
+        );
         assert!(call(&conn, "delete_runbook", json!({ "id": 9999 }))
             .unwrap_err()
             .contains("No runbook"));
-        assert!(call(&conn, "update_step", json!({ "id": 9999, "body": "x" }))
-            .unwrap_err()
-            .contains("No step"));
+        assert!(
+            call(&conn, "update_step", json!({ "id": 9999, "body": "x" }))
+                .unwrap_err()
+                .contains("No step")
+        );
         assert!(call(&conn, "delete_step", json!({ "id": 9999 }))
             .unwrap_err()
             .contains("No step"));
@@ -734,9 +762,13 @@ mod tests {
         // body is required (title alone is not enough for a report), and an
         // all-whitespace body is rejected rather than creating an empty report.
         assert!(call(&conn, "create_report", json!({ "title": "Overview" })).is_err());
-        assert!(call(&conn, "create_report", json!({ "title": "Overview", "body": "   " }))
-            .unwrap_err()
-            .contains("non-empty"));
+        assert!(call(
+            &conn,
+            "create_report",
+            json!({ "title": "Overview", "body": "   " })
+        )
+        .unwrap_err()
+        .contains("non-empty"));
 
         let created = call(
             &conn,
@@ -777,7 +809,11 @@ mod tests {
         // Nothing was created.
         assert_eq!(call(&conn, "list_runbooks", json!({})).unwrap(), "[]");
         // Read tools still work under read-only.
-        let listed = call_tool(&conn, true, &json!({ "name": "list_runbooks", "arguments": {} }));
+        let listed = call_tool(
+            &conn,
+            true,
+            &json!({ "name": "list_runbooks", "arguments": {} }),
+        );
         assert!(listed.get("isError").is_none());
 
         cleanup(&path);
