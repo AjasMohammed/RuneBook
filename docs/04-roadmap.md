@@ -157,6 +157,12 @@ standalone HTML file ([05-decisions.md](05-decisions.md) D17).
   file is a Runebook DB, copies it over the live connection in place, UI reloads).
   Unit-tested. Cloud sync still deferred.
 - ✅ Pin a runbook to a project directory (Phase 8 / D15) — also used as the run cwd.
+- ✅ **Collections** (D18): group runbooks into named collections with a title +
+  description (`collection` table + `runbook_collection` junction; migration v9 then
+  v10 widened it to many-to-many). A runbook can belong to several collections, like
+  tags; filter by collection chip in Browse, manage membership via removable chips +
+  an "＋ add" menu in the detail pane. Deleting a collection un-files (never deletes)
+  its runbooks. Unit-tested (`collections_membership_is_many_to_many`).
 - Semi-auto capture from shell history (the deferred idea from planning).
 - AI assist (generate/clean/explain/NL-search via Claude API) — **deferred by request.**
 - Encrypted DB option for secrets in steps.

@@ -70,6 +70,54 @@ fn delete_runbook(db: State<'_, Db>, id: i64) -> Result<(), String> {
     db::delete_runbook(&conn, id).map_err(|e| e.to_string())
 }
 
+// ── Collections (docs D18) — named folders grouping runbooks ────────────────
+
+#[tauri::command]
+fn list_collections(db: State<'_, Db>) -> Result<Vec<db::Collection>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    db::list_collections(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_collection(
+    db: State<'_, Db>,
+    title: String,
+    description: Option<String>,
+) -> Result<i64, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    db::create_collection(&conn, &title, description.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_collection(
+    db: State<'_, Db>,
+    id: i64,
+    title: Option<String>,
+    description: Option<String>,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    db::update_collection(&conn, id, title.as_deref(), description.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_collection(db: State<'_, Db>, id: i64) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    db::delete_collection(&conn, id).map_err(|e| e.to_string())
+}
+
+/// Replace the set of collections a runbook belongs to (many-to-many). An empty
+/// list unfiles it from every collection.
+#[tauri::command]
+fn set_runbook_collections(
+    db: State<'_, Db>,
+    runbook_id: i64,
+    collection_ids: Vec<i64>,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    db::set_runbook_collections(&conn, runbook_id, &collection_ids).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn add_step(db: State<'_, Db>, runbook_id: i64, step: db::StepInput) -> Result<i64, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
@@ -637,6 +685,11 @@ pub fn run() {
             create_runbook,
             update_runbook,
             delete_runbook,
+            list_collections,
+            create_collection,
+            update_collection,
+            delete_collection,
+            set_runbook_collections,
             add_step,
             update_step,
             reorder_steps,

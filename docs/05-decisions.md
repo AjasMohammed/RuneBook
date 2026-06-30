@@ -239,6 +239,41 @@ Runebook, instead of generating a throwaway standalone HTML file. Decisions:
 This narrows open question **Q4** for AI-authored content: reports render sanitized,
 and code blocks in them are copy-only (never auto-run).
 
+### D18 — Collections are described, many-to-many groups of runbooks (distinct from tags)
+Runbooks can be grouped into named **collections** (e.g. all the RAG notes under a
+"RAG" collection) that carry a title + description. Decisions:
+
+- **Many-to-many, like tags — a runbook can be in several collections.** A
+  `runbook_collection` junction table (mirroring `runbook_tag`), not a single
+  `collection_id` folder column. The first cut shipped a one-collection folder model
+  (migration v9, `runbook.collection_id`); it was widened to many-to-many on request.
+  Migration **v10** creates the junction, backfills any v9 folder assignment into it,
+  then drops the dead column. (Migrations are append-only, so v9 is left intact and
+  v10 supersedes it rather than rewriting it.) Tags vs collections is still a
+  meaningful split: tags are lightweight cross-cutting labels; a collection is a
+  described home with its own title/description that the user curates.
+- **A collection is its own entity (title + description), not a special tag.** Tags
+  are bare strings; the user wanted a described grouping, so a
+  `collection(id, title, description, created_at, updated_at)` table is warranted.
+  Runbook *counts* per collection are derived **client-side** (every loaded runbook
+  carries its `collectionIds`), so no count query is needed.
+- **Deleting a collection un-files its runbooks, never deletes them.** The junction's
+  foreign keys CASCADE on both sides: deleting a collection drops only its membership
+  rows (runbooks survive, un-filed); deleting a runbook drops its memberships. Same
+  semantics as `runbook_tag`.
+- **Membership is set with a dedicated `set_runbook_collections(id, ids[])` command**
+  (replace-the-whole-set, mirroring `set_tags`) — deliberately NOT a `RunbookPatch`
+  field, since that struct is constructed by the MCP server (D13) and adding a field
+  there breaks the MCP build (a known gotcha). `Runbook` gains a serialized
+  `collectionIds` array for the list/detail views, read-only on the MCP side.
+- **UI reuses existing patterns.** A collection-chip filter row + an inline
+  title/description editor live in the Browse sidebar (mirroring the tag-chip filter);
+  the open runbook's memberships show as removable chips with a "＋ add" menu in its
+  detail pane (a native `<select>` popup can't be themed in WebKitGTK — see
+  `select-option-color`).
+- **Scope kept minimal (YAGNI):** no nesting, no color/icon, no collection support in
+  the MCP tools or in Markdown/git export — added only if a real need appears.
+
 ## Open questions
 
 ### Q1 — UI framework

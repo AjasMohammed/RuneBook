@@ -27,6 +27,7 @@ See [CLAUDE.md](../CLAUDE.md) → "Memory" for the node/edge schema and conventi
 - [[bm25-materialized-gotcha]] — bm25() fails in aggregates/joins; score in an `AS MATERIALIZED` CTE
 - [[wal-concurrency]] — WAL + busy_timeout in `db::open` so the app + MCP server share the file without `SQLITE_BUSY`
 - [[git-sync]] — Phase 8/D16: export all runbooks → `<dir>/runbooks/*.md` + git commit (opt push); export-only; deletes only our own `<digits>-*.md`
+- [[collections]] — D18: named groups (title+description) of runbooks; many-to-many via `runbook_collection` junction (v9 folder → v10 widened); CASCADE un-files on delete; distinct from tags
 
 ### UX & Capture
 - [[copy-per-code-block]] — replay loop preserved: copy button on every fenced code block, via Rust `copy_to_clipboard`
@@ -45,6 +46,7 @@ See [CLAUDE.md](../CLAUDE.md) → "Memory" for the node/edge schema and conventi
 - [[project-pinning]] — Phase 8/D15: pin a runbook to a dir (`project_dir`, v7); used as the Run cwd; no auto-surface-by-cwd
 - [[markdown-render-key-guard]] — the `markdown` action re-rendered (and wiped run-output) on every var keystroke; now skips render unless the visible output changes
 - [[ui-theming-tokens]] — 2026-06: bundled Hanken/Space Grotesk via @fontsource; accent tints are JS-set `--accent-soft`/`--accent-line` so they follow the runtime accent; `--ok`/`--err` are semantic, not the accent
+- [[step-number-badges]] — 2026-06 redesign: deleted the always-duplicate `.step-title` (dead title field under D8); step markers are CSS-counter accent badges; thin scrollbars + segmented tabs + `.rendered` overflow-wrap
 - [[ai-reports]] — Phase 9/D17: an MCP AI writes a `kind='report'` runbook (migration v8); read-only reading view renders it richly (DOMPurify-sanitized markdown + callouts + TOC, copy-only code blocks) instead of a standalone HTML file
 - [[browse-list-refresh]] — externally-written runbooks (MCP) didn't show in Browse until reload; `setMode("browse")` now re-queries (fixed 2026-06-22)
 - [[link-navigation-trap]] — a link in rendered markdown navigated the WebView itself, unloading the SPA into the transparent frameless overlay (no bg, no Esc, no Back); now intercepted → `open_external` via xdg-open (fixed 2026-06-22)
@@ -95,4 +97,6 @@ See [CLAUDE.md](../CLAUDE.md) → "Memory" for the node/edge schema and conventi
 - [[ai-reports]] —depends_on→ [[markdown-step-model]] (EXTRACTED) — a report *is* a runbook whose single markdown step body is the whole document; no new entity
 - [[link-navigation-trap]] —caused_by→ [[overlay-window]] (EXTRACTED) — an ordinary in-content link click only becomes an inescapable dead end *because* the overlay is frameless/transparent with no chrome and the Esc handler lives in the SPA the WebView just unloaded
 - [[ai-reports]] —part_of→ [[copy-per-code-block]] (EXTRACTED) — reuses the same `marked` + per-code-block-copy render path, now DOMPurify-sanitized for AI-authored content
+- [[collections]] —caused_by→ [[db-rs-shared-with-mcp]] (EXTRACTED) — filing uses a dedicated `set_runbook_collection` command, NOT a `RunbookPatch` field, to avoid breaking the MCP struct literal
+- [[collections]] —conceptually_related_to→ [[tag-filtering]] (EXTRACTED) — a collection is one home folder with a description; tags are many cross-cutting labels; complementary, not redundant
 - [[app-svelte-nul-bytes]] —caused_by→ [[ai-reports]] (EXTRACTED) — discovered while grepping App.svelte to wire the report renderer

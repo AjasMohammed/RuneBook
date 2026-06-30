@@ -155,6 +155,50 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch("ALTER TABLE runbook ADD COLUMN kind TEXT NOT NULL DEFAULT 'runbook';")?;
         conn.execute_batch("PRAGMA user_version = 8;")?;
     }
+    if version < 9 {
+        // Collections (docs D18): a named folder grouping runbooks. A runbook
+        // belongs to at most one collection (`runbook.collection_id`, nullable);
+        // deleting a collection un-files its runbooks via ON DELETE SET NULL
+        // rather than deleting them. Adding a column with a foreign-key clause is
+        // allowed because its default is NULL (SQLite ALTER TABLE rule).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS collection (
+                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                 title       TEXT NOT NULL,
+                 description TEXT NOT NULL DEFAULT '',
+                 created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                 updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )?;
+        conn.execute_batch(
+            "ALTER TABLE runbook ADD COLUMN collection_id INTEGER
+                 REFERENCES collection(id) ON DELETE SET NULL;",
+        )?;
+        conn.execute_batch("PRAGMA user_version = 9;")?;
+    }
+    if version < 10 {
+        // Collections become **many-to-many** (docs D18): a runbook can live in
+        // several collections, like tags. This supersedes v9's single-folder
+        // `runbook.collection_id` with a `runbook_collection` junction (mirroring
+        // `runbook_tag`). CASCADE both ways means deleting a collection removes
+        // only its memberships (runbooks survive, un-filed), and deleting a runbook
+        // drops its memberships. We backfill any existing v9 folder assignment, then
+        // drop the now-dead column (SQLite >= 3.35).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS runbook_collection (
+                 runbook_id    INTEGER NOT NULL REFERENCES runbook(id) ON DELETE CASCADE,
+                 collection_id INTEGER NOT NULL REFERENCES collection(id) ON DELETE CASCADE,
+                 PRIMARY KEY (runbook_id, collection_id)
+             );",
+        )?;
+        // Migrate v9 folder assignments into the junction (no-op on a fresh DB).
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO runbook_collection(runbook_id, collection_id)
+                 SELECT id, collection_id FROM runbook WHERE collection_id IS NOT NULL;",
+        )?;
+        conn.execute_batch("ALTER TABLE runbook DROP COLUMN collection_id;")?;
+        conn.execute_batch("PRAGMA user_version = 10;")?;
+    }
     Ok(())
 }
 
@@ -298,6 +342,11 @@ pub struct Runbook {
     /// Discriminator: "runbook" (default) or "report" — an AI-authored Markdown
     /// document rendered read-only (docs D17). Populated in list and detail views.
     pub kind: String,
+    /// Ids of the collections this runbook belongs to (docs D18) — many-to-many,
+    /// like tags. Empty when unfiled. Populated in both list and detail views so
+    /// the UI can filter by collection.
+    #[serde(rename = "collectionIds")]
+    pub collection_ids: Vec<i64>,
     /// Optional absolute path this runbook is pinned to (docs D15). Used as the
     /// working directory for executed commands; "" when unpinned. Empty in list
     /// views; populated by `get_runbook`.
@@ -395,7 +444,7 @@ fn set_tags(conn: &Connection, runbook_id: i64, tags: &[String]) -> rusqlite::Re
 // Runbook CRUD
 // ----------------------------------------------------------------------------
 
-/// A runbook header row before tags/steps are hydrated.
+/// A runbook header row before tags/steps/collections are hydrated.
 /// Columns: id, title, description, created_at, updated_at, kind.
 type RunbookRow = (i64, String, String, String, String, String);
 
@@ -426,6 +475,7 @@ pub fn list_runbooks(conn: &Connection, query: Option<&str>) -> rusqlite::Result
             description,
             tags: tags_for(conn, id)?,
             kind,
+            collection_ids: collections_for(conn, id)?,
             // Pinned dir is only needed in the detail view; left empty in lists
             // (like `steps`) to keep the list/FTS queries untouched.
             project_dir: String::new(),
@@ -564,6 +614,7 @@ pub fn get_runbook(conn: &Connection, id: i64) -> rusqlite::Result<Option<Runboo
         description,
         tags: tags_for(conn, id)?,
         kind,
+        collection_ids: collections_for(conn, id)?,
         project_dir,
         steps,
         created_at,
@@ -655,6 +706,117 @@ pub fn update_runbook(conn: &Connection, id: i64, patch: RunbookPatch) -> rusqli
 pub fn delete_runbook(conn: &Connection, id: i64) -> rusqlite::Result<()> {
     // Steps and tag links cascade via the foreign keys (PRAGMA enabled in open).
     conn.execute("DELETE FROM runbook WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+// ----------------------------------------------------------------------------
+// Collections (docs D18) — a named folder grouping runbooks. A runbook belongs
+// to at most one collection (`runbook.collection_id`, nullable). Deleting a
+// collection un-files its runbooks (ON DELETE SET NULL), never deletes them.
+// ----------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct Collection {
+    pub id: i64,
+    pub title: String,
+    pub description: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+}
+
+/// All collections, alphabetical. Runbook counts aren't computed here — the UI
+/// already holds every runbook (each carries its `collectionId`) and derives them.
+pub fn list_collections(conn: &Connection) -> rusqlite::Result<Vec<Collection>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, description, created_at, updated_at
+         FROM collection ORDER BY title COLLATE NOCASE, id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(Collection {
+            id: r.get(0)?,
+            title: r.get(1)?,
+            description: r.get(2)?,
+            created_at: r.get(3)?,
+            updated_at: r.get(4)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn create_collection(
+    conn: &Connection,
+    title: &str,
+    description: Option<&str>,
+) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO collection(title, description) VALUES (?1, ?2)",
+        params![title, description.unwrap_or("")],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Update a collection's title and/or description — only the fields passed change.
+pub fn update_collection(
+    conn: &Connection,
+    id: i64,
+    title: Option<&str>,
+    description: Option<&str>,
+) -> rusqlite::Result<()> {
+    if let Some(t) = title {
+        conn.execute(
+            "UPDATE collection SET title = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![t, id],
+        )?;
+    }
+    if let Some(d) = description {
+        conn.execute(
+            "UPDATE collection SET description = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![d, id],
+        )?;
+    }
+    Ok(())
+}
+
+/// Delete a collection. Its runbooks survive — their `collection_id` is set to
+/// NULL by the ON DELETE SET NULL foreign key (so they become unfiled).
+pub fn delete_collection(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM collection WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+/// The collection ids a runbook belongs to (many-to-many via `runbook_collection`).
+fn collections_for(conn: &Connection, runbook_id: i64) -> rusqlite::Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT collection_id FROM runbook_collection WHERE runbook_id = ?1 ORDER BY collection_id",
+    )?;
+    let rows = stmt.query_map([runbook_id], |r| r.get::<_, i64>(0))?;
+    rows.collect()
+}
+
+/// Replace the set of collections a runbook belongs to (mirrors `set_tags`):
+/// clear its memberships, then re-link each id. Touches `updated_at` so the list
+/// re-sorts. An empty slice unfiles the runbook from every collection.
+pub fn set_runbook_collections(
+    conn: &Connection,
+    runbook_id: i64,
+    collection_ids: &[i64],
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM runbook_collection WHERE runbook_id = ?1",
+        [runbook_id],
+    )?;
+    for cid in collection_ids {
+        conn.execute(
+            "INSERT OR IGNORE INTO runbook_collection(runbook_id, collection_id) VALUES (?1, ?2)",
+            params![runbook_id, cid],
+        )?;
+    }
+    conn.execute(
+        "UPDATE runbook SET updated_at = datetime('now') WHERE id = ?1",
+        [runbook_id],
+    )?;
     Ok(())
 }
 
@@ -1323,5 +1485,57 @@ mod tests {
             !md.contains("## 1."),
             "report export must not add step headings"
         );
+    }
+
+    #[test]
+    fn collections_membership_is_many_to_many() {
+        let conn = mem();
+        // A fresh runbook belongs to no collection.
+        let rb = create_runbook(&conn, "RAG chunking", None, None).unwrap();
+        assert!(get_runbook(&conn, rb).unwrap().unwrap().collection_ids.is_empty());
+
+        let c1 = create_collection(&conn, "RAG", Some("retrieval notes")).unwrap();
+        let c2 = create_collection(&conn, "Deploy", None).unwrap();
+        // Listed alphabetically, with their description.
+        let cols = list_collections(&conn).unwrap();
+        assert_eq!(cols.iter().map(|c| &c.title).collect::<Vec<_>>(), ["Deploy", "RAG"]);
+        assert_eq!(cols.iter().find(|c| c.id == c1).unwrap().description, "retrieval notes");
+
+        // A runbook can belong to MULTIPLE collections at once — in both views.
+        set_runbook_collections(&conn, rb, &[c1, c2]).unwrap();
+        let mut got = get_runbook(&conn, rb).unwrap().unwrap().collection_ids;
+        got.sort();
+        assert_eq!(got, {
+            let mut e = vec![c1, c2];
+            e.sort();
+            e
+        });
+        let listed = list_runbooks(&conn, None).unwrap();
+        assert_eq!(listed.iter().find(|r| r.id == rb).unwrap().collection_ids.len(), 2);
+
+        // Replacing the set removes old memberships; an empty set unfiles entirely.
+        set_runbook_collections(&conn, rb, &[c2]).unwrap();
+        assert_eq!(get_runbook(&conn, rb).unwrap().unwrap().collection_ids, vec![c2]);
+        set_runbook_collections(&conn, rb, &[]).unwrap();
+        assert!(get_runbook(&conn, rb).unwrap().unwrap().collection_ids.is_empty());
+
+        // Updating only the title leaves the description intact.
+        update_collection(&conn, c1, Some("RAG v2"), None).unwrap();
+        let c = list_collections(&conn).unwrap().into_iter().find(|c| c.id == c1).unwrap();
+        assert_eq!((c.title.as_str(), c.description.as_str()), ("RAG v2", "retrieval notes"));
+
+        // Deleting a collection drops only its memberships (junction CASCADE) — the
+        // runbook survives and keeps its OTHER collections.
+        set_runbook_collections(&conn, rb, &[c1, c2]).unwrap();
+        delete_collection(&conn, c1).unwrap();
+        assert!(get_runbook(&conn, rb).unwrap().is_some(), "runbook must survive");
+        assert_eq!(get_runbook(&conn, rb).unwrap().unwrap().collection_ids, vec![c2]);
+
+        // Deleting the runbook drops its memberships too (other side of CASCADE).
+        delete_runbook(&conn, rb).unwrap();
+        let orphans: i64 = conn
+            .query_row("SELECT count(*) FROM runbook_collection", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(orphans, 0);
     }
 }

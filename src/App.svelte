@@ -83,6 +83,17 @@
   let addBuffer = { body: "" };
   let stepComposer;
 
+  // ── Collections (D18) — named folders grouping runbooks ──────────
+  // A runbook belongs to ≤1 collection (folder model). A collection has a title
+  // + description; clicking a chip filters the list to it. Each loaded runbook
+  // carries its `collectionId`, so filtering and counts stay client-side (no IPC).
+  let collections = [];
+  let activeCollection = null; // sidebar collection filter (id), or null = all
+  let newCollectionName = ""; // create-collection input
+  let collectionEdit = { title: "", description: "" }; // active collection's meta buffer
+  let collPickerOpen = false; // detail-pane "file into a collection" dropdown
+  let collPickerEl;
+
   // Replay mode: work a multi-step runbook as a checklist (D10). Step `done`
   // flags persist, so closing the overlay and reopening resumes where you left
   // off; the bar shows progress and a reset.
@@ -140,9 +151,25 @@
 
   $: currentRunbook = runbooks.find((r) => r.id === currentRunbookId) ?? null;
 
-  // All distinct tags (for the sidebar filter) and the tag-filtered list.
+  // All distinct tags (for the sidebar filter) and the tag + collection filtered list.
   $: allTags = [...new Set(runbooks.flatMap((r) => r.tags))].sort();
-  $: displayRunbooks = activeTag ? runbooks.filter((r) => r.tags.includes(activeTag)) : runbooks;
+  $: displayRunbooks = runbooks.filter(
+    (r) =>
+      (!activeTag || r.tags.includes(activeTag)) &&
+      (activeCollection == null || r.collectionIds.includes(activeCollection))
+  );
+
+  // ── Collections (D18) ────────────────────────────────────────────
+  // Runbook count per collection (client-side — each runbook carries collectionIds).
+  $: collCounts = runbooks.reduce((m, r) => {
+    for (const cid of r.collectionIds) m[cid] = (m[cid] ?? 0) + 1;
+    return m;
+  }, {});
+  $: activeCollectionObj = collections.find((c) => c.id === activeCollection) ?? null;
+  // The open runbook's collections (membership chips) and the ones it can still be
+  // added to (the "＋ add" menu) — many-to-many, so both are lists.
+  $: selectedCollections = selected ? collections.filter((c) => selected.collectionIds.includes(c.id)) : [];
+  $: addableCollections = selected ? collections.filter((c) => !selected.collectionIds.includes(c.id)) : [];
 
   // ── AI reports (D17) ─────────────────────────────────────────────
   // A report is a kind='report' runbook whose step bodies are one Markdown
@@ -273,6 +300,7 @@
   // so its own click toggles rather than immediately re-closing).
   function onDocClick(e) {
     if (pickerOpen && pickerEl && !pickerEl.contains(e.target)) pickerOpen = false;
+    if (collPickerOpen && collPickerEl && !collPickerEl.contains(e.target)) collPickerOpen = false;
     // Click outside the palette card closes it (the palette opens via Ctrl/Cmd+K,
     // never a click, so there's no open-then-immediately-close race).
     if (paletteOpen && paletteCard && !paletteCard.contains(e.target)) closePalette();
@@ -297,9 +325,13 @@
       // first note (its derived label) rather than a generic "Untitled runbook".
       let target = currentRunbookId;
       if (target == null) {
-        const title = deriveLabel(draft.body, 0).slice(0, 50) || "Untitled runbook";
+        // Prefer an explicitly typed name from the "＋ new runbook…" field; only
+        // fall back to deriving a title from the note's first line when it's blank
+        // (so a name the user typed but didn't submit isn't silently discarded).
+        const title = newRbName.trim() || deriveLabel(draft.body, 0).slice(0, 50) || "Untitled runbook";
         target = await run(() => invoke("create_runbook", { title }));
         if (target == null) return;
+        newRbName = "";
         await setCurrentRunbook(target);
       }
 
@@ -499,6 +531,78 @@
 
   function toggleTagFilter(t) {
     activeTag = activeTag === t ? null : t;
+  }
+
+  // ── Collections (D18) ────────────────────────────────────────────
+  async function loadCollections() {
+    collections = (await run(() => invoke("list_collections"))) ?? [];
+  }
+
+  // Click a chip to filter to that collection; click again to clear. Entering a
+  // collection seeds the meta-editor buffer from it.
+  function toggleCollectionFilter(id) {
+    if (activeCollection === id) {
+      activeCollection = null;
+    } else {
+      activeCollection = id;
+      const c = collections.find((x) => x.id === id);
+      collectionEdit = { title: c?.title ?? "", description: c?.description ?? "" };
+    }
+  }
+
+  async function createCollection() {
+    const title = newCollectionName.trim();
+    if (!title) return;
+    const id = await run(() => invoke("create_collection", { title, description: "" }));
+    newCollectionName = "";
+    await loadCollections();
+    // Make it the active filter so its (empty) meta card opens for a description.
+    if (id != null) {
+      activeCollection = id;
+      collectionEdit = { title, description: "" };
+    }
+  }
+
+  // Persist the active collection's title + description together (both from the
+  // buffer, so a blur on one field can't clobber the other). A blank title is
+  // ignored — a collection must keep a name.
+  async function saveCollectionMeta() {
+    if (activeCollection == null) return;
+    const title = collectionEdit.title.trim();
+    if (!title) return;
+    await run(() =>
+      invoke("update_collection", { id: activeCollection, title, description: collectionEdit.description })
+    );
+    await loadCollections();
+  }
+
+  async function deleteCollection(id) {
+    await run(() => invoke("delete_collection", { id }));
+    if (activeCollection === id) activeCollection = null;
+    await loadCollections();
+    // Its runbooks were un-filed (collectionId → null) — refresh cards + the open one.
+    await loadRunbooks(search);
+    if (selected) await refreshSelected();
+  }
+
+  // Add / remove the open runbook from a collection (many-to-many). Both send the
+  // full new id set, mirroring how tags are saved.
+  async function setRunbookCollections(ids) {
+    if (!selected) return;
+    await run(() => invoke("set_runbook_collections", { runbookId: selected.id, collectionIds: ids }));
+    await refreshSelected();
+    await loadRunbooks(search);
+  }
+
+  async function addRunbookToCollection(id) {
+    collPickerOpen = false;
+    if (!selected || selected.collectionIds.includes(id)) return;
+    await setRunbookCollections([...selected.collectionIds, id]);
+  }
+
+  async function removeRunbookFromCollection(id) {
+    if (!selected) return;
+    await setRunbookCollections(selected.collectionIds.filter((x) => x !== id));
   }
 
   // ── Export ───────────────────────────────────────────────────────
@@ -1136,6 +1240,7 @@
       // never reaches here. Cancel an open palette/picker/editor/composer before hiding.
       if (paletteOpen) closePalette();
       else if (pickerOpen) pickerOpen = false;
+      else if (collPickerOpen) collPickerOpen = false;
       else if (editingId !== null) editingId = null;
       else if (addingStep) cancelAddStep();
       else await appWindow.hide();
@@ -1144,6 +1249,7 @@
 
   onMount(async () => {
     await loadRunbooks();
+    await loadCollections();
     // Restore the persisted current runbook (if it still exists).
     const saved = await run(() => invoke("get_setting", { key: CURRENT_RB_KEY }));
     const savedId = saved != null ? Number(saved) : null;
@@ -1311,6 +1417,48 @@
           on:input={() => loadRunbooks(search)}
         />
 
+        <!-- Collections (D18): folders grouping runbooks. Click a chip to filter;
+             the active one opens an editable title/description card below. -->
+        <div class="coll-filter">
+          {#each collections as c (c.id)}
+            <button
+              class="coll-chip"
+              class:on={activeCollection === c.id}
+              aria-pressed={activeCollection === c.id}
+              title={c.description || c.title}
+              on:click={() => toggleCollectionFilter(c.id)}
+            >
+              🗂 {c.title}
+              <span class="coll-count">{collCounts[c.id] ?? 0}</span>
+            </button>
+          {/each}
+          <form class="new-coll" on:submit|preventDefault={createCollection}>
+            <input class="coll-input" placeholder="＋ collection" aria-label="New collection" bind:value={newCollectionName} />
+          </form>
+        </div>
+
+        {#if activeCollectionObj}
+          <div class="coll-meta">
+            <input
+              class="coll-meta-title"
+              aria-label="Collection title"
+              bind:value={collectionEdit.title}
+              on:blur={saveCollectionMeta}
+            />
+            <textarea
+              class="coll-meta-desc"
+              rows="2"
+              placeholder="Describe this collection…"
+              aria-label="Collection description"
+              bind:value={collectionEdit.description}
+              on:blur={saveCollectionMeta}
+            ></textarea>
+            <button class="ghost sm coll-del" on:click={() => deleteCollection(activeCollectionObj.id)}>
+              Delete collection
+            </button>
+          </div>
+        {/if}
+
         {#if allTags.length > 0}
           <div class="tag-filter">
             {#each allTags as t}
@@ -1322,7 +1470,15 @@
         {/if}
 
         {#if displayRunbooks.length === 0}
-          <p class="muted empty">{activeTag ? "No runbooks with that tag." : "No runbooks yet."}</p>
+          <p class="muted empty">
+            {#if activeCollection != null}
+              Empty. Clear this filter, open a runbook, and file it via its <strong>Collection</strong> menu.
+            {:else if activeTag}
+              No runbooks with that tag.
+            {:else}
+              No runbooks yet.
+            {/if}
+          </p>
         {:else}
           <ul>
             {#each displayRunbooks as r (r.id)}
@@ -1339,7 +1495,8 @@
                       {progressMap[r.id].done}/{progressMap[r.id].total}
                     </span>
                   {/if}
-                  {#each r.tags as t}<span class="tag">#{t}</span>{/each}
+                  <!-- No per-row tags here: a long title would otherwise get
+                       squeezed out by them. Filter by tag via the chips above. -->
                 </button>
                 <button class="del" title="Delete runbook" aria-label="Delete runbook {r.title}" on:click={() => deleteRunbook(r.id)}>✕</button>
               </li>
@@ -1450,6 +1607,46 @@
             {/if}
           </div>
 
+          <!-- Collections (D18): a runbook can belong to several. Membership shows
+               as removable chips; "＋ add" opens a menu of the rest. Custom dropdown
+               — a native <select> popup can't be themed in WebKitGTK. -->
+          <div class="coll-assign" bind:this={collPickerEl}>
+            <span class="coll-assign-label">🗂</span>
+            {#each selectedCollections as c (c.id)}
+              <span class="tag-chip on coll-member">
+                {c.title}
+                <button class="tag-x" title="Remove from collection" aria-label="Remove from collection {c.title}" on:click={() => removeRunbookFromCollection(c.id)}>✕</button>
+              </span>
+            {/each}
+            {#if addableCollections.length > 0}
+              <div class="rb-dropdown coll-add">
+                <button
+                  type="button"
+                  class="tag-chip coll-add-trigger"
+                  aria-haspopup="menu"
+                  aria-expanded={collPickerOpen}
+                  aria-label="Add this runbook to a collection"
+                  on:click={() => (collPickerOpen = !collPickerOpen)}
+                >
+                  ＋ add
+                </button>
+                {#if collPickerOpen}
+                  <ul class="rb-menu" role="menu">
+                    {#each addableCollections as c (c.id)}
+                      <li role="none">
+                        <button type="button" role="menuitem" on:click={() => addRunbookToCollection(c.id)}>
+                          {c.title}
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            {:else if selectedCollections.length === 0}
+              <span class="muted coll-none">Not in any collection</span>
+            {/if}
+          </div>
+
           {#if varNames.length > 0}
             <div class="vars">
               <span class="vars-label">Variables</span>
@@ -1536,7 +1733,7 @@
           {:else}
             <!-- One step renders as a plain note (no number, no reorder);
                  two or more render as a numbered list. -->
-            <ol class="steps" class:single={selected.steps.length === 1}>
+            <ol class="steps" class:single={selected.steps.length === 1} class:replay={replayMode}>
               {#each selected.steps as s, i (s.id)}
                 <li class:done={replayMode && s.done}>
                   {#if editingId === s.id}
@@ -1556,9 +1753,6 @@
                           aria-label={`Mark step ${i + 1} done: ${s.title?.trim() || deriveLabel(s.body, i)}`}
                           on:change={(e) => setStepDone(s, e.target.checked)}
                         />
-                      {/if}
-                      {#if selected.steps.length > 1}
-                        <span class="step-title">{s.title?.trim() || deriveLabel(s.body, i)}</span>
                       {/if}
                       <span class="step-tools">
                         {#if selected.steps.length > 1}

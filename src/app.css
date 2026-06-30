@@ -28,10 +28,38 @@ body {
   overflow: hidden;
   -webkit-user-select: none;
   user-select: none;
+  /* Crisper text on the dark translucent overlay — without this the grotesks
+     render slightly heavy/fuzzy in WebKitGTK. */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 #app {
   height: 100vh;
+}
+
+/* Thin, modern scrollbars everywhere — the default chunky GTK scrollbar is the
+   biggest "unstyled" tell on this overlay. Overlay-style: transparent track,
+   translucent thumb that brightens on hover. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.26);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .overlay {
@@ -68,24 +96,32 @@ body {
   flex: none;
   font-family: var(--font-display);
   font-weight: 600;
-  letter-spacing: 0.2px;
+  font-size: 15px;
+  letter-spacing: -0.01em;
 }
 
+/* Segmented control: the three modes sit in one inset track, the active mode
+   reads as a raised pill. */
 .tabs {
   flex: none;
   display: flex;
   gap: 2px;
   margin-left: 6px;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
 }
 
 .tabs button {
   cursor: pointer;
   font-size: 12px;
-  padding: 4px 10px;
+  padding: 4px 11px;
   color: var(--muted);
   background: none;
   border: none;
   border-radius: 7px;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
 .tabs button:hover {
@@ -94,7 +130,8 @@ body {
 
 .tabs button.active {
   color: var(--fg);
-  background: rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.11);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 
 .hint {
@@ -413,6 +450,7 @@ input {
 
 input:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 button {
@@ -422,6 +460,7 @@ button {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   padding: 7px 12px;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 
 button:hover {
@@ -466,10 +505,21 @@ a:focus-visible {
   display: flex;
   align-items: center;
   border-radius: 8px;
+  transition: background 0.12s ease;
+}
+
+.list li:hover {
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .list li.active {
   background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.list li.active .rb-title {
+  color: var(--fg);
+  font-weight: 500;
 }
 
 .rb {
@@ -489,6 +539,8 @@ a:focus-visible {
 }
 
 .rb-title {
+  flex: 1;
+  min-width: 0; /* shrink + ellipsize within the row instead of shoving the progress badge out */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -497,6 +549,10 @@ a:focus-visible {
 .tag {
   font-size: 11px;
   color: var(--accent);
+  /* Separate adjacent inline tags — e.g. the report header renders them as bare
+     spans, which without this glue together as "#db#ai". In the flex card/palette
+     rows this just adds to the existing gap, which is harmless. */
+  margin-right: 5px;
 }
 
 .del {
@@ -518,6 +574,8 @@ a:focus-visible {
 .detail h2 {
   margin: 0 0 8px;
   font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   font-family: var(--font-display);
 }
 
@@ -629,6 +687,134 @@ a:focus-visible {
   font-size: 12px;
 }
 
+/* ── Collections (D18) — folder grouping in the Browse sidebar ─────────────── */
+.coll-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.coll-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 8px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid transparent;
+  border-radius: 999px;
+}
+
+.coll-chip:hover {
+  color: var(--fg);
+}
+
+.coll-chip.on {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.coll-count {
+  font-size: 10px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 0 5px;
+}
+
+.coll-chip.on .coll-count {
+  color: var(--accent);
+}
+
+.new-coll {
+  flex: none;
+}
+
+.coll-input {
+  width: 96px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+/* Editable title + description for the active collection. */
+.coll-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+
+.coll-meta-title {
+  font-weight: 600;
+}
+
+.coll-meta-desc {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 6px 8px;
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  outline: none;
+}
+
+.coll-meta-desc:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.coll-del {
+  align-self: flex-start;
+  color: var(--muted);
+}
+
+/* Detail-pane collection membership: removable chips + a "＋ add" menu (reuses
+   .tag-chip for the chips and .rb-dropdown/.rb-menu for the add menu). */
+.coll-assign {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 14px;
+}
+
+.coll-assign-label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.coll-member {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.coll-add {
+  position: relative;
+}
+
+.coll-add-trigger {
+  cursor: pointer;
+}
+
+.coll-none {
+  font-size: 12px;
+}
+
 /* Variables / placeholder fill-ins. */
 .vars {
   display: flex;
@@ -675,41 +861,84 @@ a:focus-visible {
 
 .steps {
   margin: 0 0 18px;
-  padding-left: 22px;
+  padding-left: 0;
+  list-style: none;
+  counter-reset: step;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 18px;
 }
 
 .steps li {
-  list-style: decimal;
+  counter-increment: step;
+  position: relative;
+  min-width: 0; /* flex column item: let it shrink so wide code blocks scroll internally */
+  padding-left: 36px;
 }
 
-/* A single-step runbook is a plain note: no number, no list indent. */
-.steps.single {
+/* On-brand step marker: the number in an accent-tinted circle, so a multi-step
+   runbook reads as a deliberate sequence rather than default browser digits. */
+.steps li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: -1px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: 50%;
+}
+
+/* A single-step runbook is a plain note: no number badge, no indent. */
+.steps.single li {
   padding-left: 0;
 }
 
-.steps.single li {
-  list-style: none;
+.steps.single li::before {
+  display: none;
 }
 
+/* Replay: the checkbox is the row marker, so drop the number badge and slot the
+   checkbox into its place. */
+.steps.replay li {
+  padding-left: 30px;
+}
+
+.steps.replay li::before {
+  display: none;
+}
+
+.steps.replay .step-check {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  margin: 0;
+}
+
+/* The step-head holds only the hover tools (and, in replay, the checkbox) — both
+   absolutely placed — so it reserves no leading line and the body's first row
+   sits beside the number badge. */
 .step-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 20px; /* keep the hover-tools strip even when there's no title */
-}
-
-.step-title {
-  font-weight: 600;
 }
 
 .step-tools {
+  position: absolute;
+  top: -2px;
+  right: 0;
   display: flex;
   gap: 2px;
-  margin-left: auto; /* keep tools right-aligned even when the title is hidden */
+  padding: 2px;
+  background: rgba(26, 26, 30, 0.92);
+  border-radius: 8px;
   opacity: 0;
   transition: opacity 0.12s ease;
 }
@@ -737,6 +966,9 @@ a:focus-visible {
   font-size: 13px;
   line-height: 1.55;
   color: var(--fg);
+  /* Break long unbroken tokens (URLs, paths) instead of forcing the step/detail
+     pane wider than the overlay — which the overlay's overflow:hidden then clips. */
+  overflow-wrap: anywhere;
 }
 
 .rendered :first-child {
@@ -754,7 +986,9 @@ a:focus-visible {
 .rendered h3 {
   font-family: var(--font-display);
   font-size: 14px;
-  margin: 10px 0 4px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 12px 0 5px;
 }
 
 .rendered a {
@@ -1038,12 +1272,8 @@ code {
   cursor: pointer;
 }
 
-.steps li.done .step-title {
-  text-decoration: line-through;
-  color: var(--muted);
-}
-
-.steps li.done .rendered {
+.steps li.done .rendered,
+.steps li.done::before {
   opacity: 0.5;
 }
 
@@ -1304,7 +1534,8 @@ button:disabled:hover {
   font-family: var(--font-display);
   font-size: 19px;
   font-weight: 600;
-  margin: 4px 0 8px;
+  letter-spacing: -0.01em;
+  margin: 4px 0 10px;
 }
 
 .report-title .title-btn {
